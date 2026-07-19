@@ -1,0 +1,28 @@
+name: focusflow_mobile
+description: "FocusFlow — Android client for the self-hosted FocusFlow productivity app."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  # State management (no codegen — plain StateNotifier/Provider).
+  flutter_riverpod: ^2.5.1
+  # HTTP client with interceptors (bearer auth + 401 refresh).
+  dio: ^5.7.0
+  # Secure token storage on-device (Android Keystore-backed).
+  flutter_secure_storage: ^9.2.2
+  # Date formatting.
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

@@ -46,6 +46,24 @@ flutter pub get
 flutter analyze
 ```
 
+### Enable network access — **REQUIRED**
+
+The app makes HTTP calls to your backend, so after `flutter create` edit
+`android/app/src/main/AndroidManifest.xml`:
+
+1. Add the INTERNET permission just inside `<manifest …>` (above `<application>`):
+   ```xml
+   <uses-permission android:name="android.permission.INTERNET"/>
+   ```
+2. Allow cleartext HTTP **for local dev** (the dev backend is `http://`, not `https://`) —
+   add this attribute to the `<application …>` tag:
+   ```xml
+   android:usesCleartextTraffic="true"
+   ```
+   > Omit this if you serve the backend over HTTPS.
+
+Without both, every request fails on a real build with a connection error.
+
 ## Point the app at your backend
 
 The API origin is configurable (no rebuild needed):

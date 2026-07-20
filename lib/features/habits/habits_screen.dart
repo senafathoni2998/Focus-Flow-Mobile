@@ -173,7 +173,17 @@ class _HabitEditorScreenState extends ConsumerState<HabitEditorScreen> {
     _icon = h?.icon ?? '✅';
     _color = h?.color ?? 'primary';
     _goalType = h?.goalType ?? 'achieve';
-    _frequencyType = h?.frequencyType ?? 'daily';
+    // Reconstruct the UI mode: a stored `daily` habit with weekdays set is the
+    // "specific days of the week" mode (the backend has no separate value for it).
+    if (h == null) {
+      _frequencyType = 'daily';
+    } else if (h.frequencyType == 'weekly') {
+      _frequencyType = 'weekly';
+    } else if (h.weekdays.isNotEmpty) {
+      _frequencyType = 'specific';
+    } else {
+      _frequencyType = 'daily';
+    }
     _weekdays.addAll(h?.weekdays ?? const []);
     _weeklyTarget = h?.weeklyTarget ?? 3;
   }

@@ -78,7 +78,9 @@ class Goal {
         currentValue: asDouble(j['currentValue']),
         unit: asStringOrNull(j['unit']),
         manualProgress: asInt(j['manualProgress']),
-        targetDate: Dates.parse(j['targetDate']),
+        // Goal deadlines are stored at UTC-midnight; key by UTC calendar day so
+        // the date doesn't shift across timezones.
+        targetDate: Dates.parseUtcDay(j['targetDate']),
         status: asString(j['status'], 'active'),
         order: j['order'] == null ? null : asInt(j['order']),
         taskTotal: j['taskTotal'] == null ? null : asInt(j['taskTotal']),

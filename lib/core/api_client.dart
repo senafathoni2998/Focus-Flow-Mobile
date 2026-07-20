@@ -3,6 +3,10 @@ import 'package:dio/dio.dart';
 import 'api_exception.dart';
 import 'token_storage.dart';
 
+/// Outcome of a token-refresh attempt. `networkError` must NOT sign the user out
+/// (a transient blip shouldn't kill a valid session); only `authFailed` does.
+enum _RefreshOutcome { refreshed, authFailed, networkError }
+
 /// Thin wrapper around Dio that:
 ///  - prefixes every path with the `/api/v1` base,
 ///  - attaches the bearer access token to authenticated requests,
@@ -48,21 +52,22 @@ class ApiClient {
           final alreadyRetried = req.extra['retried'] == true;
 
           if (status == 401 && !isAuthCall && !alreadyRetried) {
-            final refreshed = await _tryRefresh();
-            if (refreshed) {
-              final newToken = await storage.getAccessToken();
-              req.extra['retried'] = true;
-              req.headers['Authorization'] = 'Bearer $newToken';
-              try {
-                final clone = await _dio.fetch<dynamic>(req);
-                return handler.resolve(clone);
-              } on DioException catch (err) {
-                return handler.next(err);
-              }
-            } else {
+            // If a concurrent request already refreshed the token, just retry with
+            // the current one instead of refreshing again (avoids a stampede).
+            final current = await storage.getAccessToken();
+            if (current != null &&
+                current.isNotEmpty &&
+                req.headers['Authorization'] != 'Bearer $current') {
+              return _retryWith(req, current, handler);
+            }
+            final result = await _tryRefresh();
+            if (result == _RefreshOutcome.refreshed) {
+              return _retryWith(req, await storage.getAccessToken(), handler);
+            } else if (result == _RefreshOutcome.authFailed) {
               await storage.clearTokens();
               onSessionExpired?.call();
             }
+            // networkError → propagate the original error, keep the session.
           }
           handler.next(e);
         },
@@ -74,9 +79,27 @@ class ApiClient {
   final void Function()? onSessionExpired;
   late final Dio _dio;
 
-  Future<bool> _tryRefresh() async {
+  /// Retry a request with a (possibly refreshed) token, marking it so it won't
+  /// loop back into the refresh branch.
+  Future<void> _retryWith(
+    RequestOptions req,
+    String? token,
+    ErrorInterceptorHandler handler,
+  ) async {
+    req.extra['retried'] = true;
+    if (token != null && token.isNotEmpty) {
+      req.headers['Authorization'] = 'Bearer $token';
+    }
+    try {
+      handler.resolve(await _dio.fetch<dynamic>(req));
+    } on DioException catch (err) {
+      handler.next(err);
+    }
+  }
+
+  Future<_RefreshOutcome> _tryRefresh() async {
     final refresh = await storage.getRefreshToken();
-    if (refresh == null || refresh.isEmpty) return false;
+    if (refresh == null || refresh.isEmpty) return _RefreshOutcome.authFailed;
     try {
       final r = await _dio.post<dynamic>(
         '/auth/refresh',
@@ -86,11 +109,17 @@ class ApiClient {
       final data = r.data as Map;
       final access = data['accessToken'] as String?;
       final newRefresh = data['refreshToken'] as String?;
-      if (access == null || newRefresh == null) return false;
+      if (access == null || newRefresh == null) return _RefreshOutcome.authFailed;
       await storage.saveTokens(access: access, refresh: newRefresh);
-      return true;
+      return _RefreshOutcome.refreshed;
+    } on DioException catch (err) {
+      final s = err.response?.statusCode;
+      // A 4xx means the refresh token itself is bad → sign out. No response (or a
+      // 5xx) is a transient/network failure → keep the session, don't sign out.
+      if (s != null && s >= 400 && s < 500) return _RefreshOutcome.authFailed;
+      return _RefreshOutcome.networkError;
     } catch (_) {
-      return false;
+      return _RefreshOutcome.networkError;
     }
   }
 

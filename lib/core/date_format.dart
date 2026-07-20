@@ -15,7 +15,11 @@ class Dates {
   /// UTC ISO-8601 (with `Z`) — for reminder trigger instants.
   static String utcIso(DateTime d) => d.toUtc().toIso8601String();
 
-  /// Parse a server ISO date string into a LOCAL DateTime (null-safe).
+  /// Parse a server date value into a LOCAL DateTime (null-safe).
+  ///
+  /// A bare `yyyy-MM-dd` (how the mobile API emits all-day task due/start dates)
+  /// parses as local midnight of that calendar day — timezone-independent. A full
+  /// ISO instant is converted to local time.
   static DateTime? parse(dynamic iso) {
     if (iso == null) return null;
     if (iso is DateTime) return iso.toLocal();
@@ -23,6 +27,19 @@ class Dates {
     if (s.isEmpty) return null;
     final d = DateTime.tryParse(s);
     return d?.toLocal();
+  }
+
+  /// Parse a value stored at UTC-midnight (goal target dates) into the LOCAL
+  /// DateTime for the SAME calendar day, regardless of the device timezone — so a
+  /// deadline "July 20" never renders as July 19/21 on a phone in another zone.
+  static DateTime? parseUtcDay(dynamic iso) {
+    if (iso == null) return null;
+    final s = iso is DateTime ? iso.toIso8601String() : iso.toString();
+    if (s.isEmpty) return null;
+    final d = DateTime.tryParse(s);
+    if (d == null) return null;
+    final u = d.toUtc();
+    return DateTime(u.year, u.month, u.day);
   }
 
   static DateTime startOfDay(DateTime d) => DateTime(d.year, d.month, d.day);

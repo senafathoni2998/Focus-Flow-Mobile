@@ -134,3 +134,37 @@ Fine for sideloading. **❓ Change the package id before any Play Store upload.*
 
 If you don't respond to the ❓ items, the ✅ defaults above stand and the app is fully
 usable as built.
+
+---
+
+## Post-build adversarial review (applied)
+
+Because Flutter couldn't be compiled in the build environment, a 6-lens review
+(compile-correctness, contract match, backend security, backend fidelity, Dart logic —
+each finding independently verified) ran over both codebases. **8 findings confirmed;
+6 fixed, 2 kept as decisions:**
+
+**Fixed:**
+- ✅ Task editor crashed if a task's list **or** goal id wasn't in the loaded dropdown
+  items (deleted list / archived goal / list still loading) — Flutter asserts the
+  dropdown value matches exactly one item. Now guarded (falls back to Inbox / None).
+- ✅ All-day dates could shift by a day on a phone in a different timezone than the
+  server. Task due/start dates are now emitted by the API as bare `yyyy-MM-dd`
+  (calendar day), and goal deadlines are keyed by UTC day on the client — both are now
+  timezone-independent. (This resolves most of ⚠️ B3.)
+- ✅ Cold-starting the app while offline / server-down wiped the session and forced
+  re-login. Now only a real `401` signs you out; transient errors keep the session.
+- ✅ The 401-refresh interceptor no longer signs you out on a network blip during
+  refresh (only on an actual auth failure), and avoids a refresh "stampede" when many
+  requests 401 at once.
+- ✅ Login now spends the same bcrypt cost even when the email is unknown, closing a
+  timing side-channel that could reveal whether an account exists.
+
+**Kept as decisions (see items above):**
+- Registration still returns a distinct "already exists" (409) for good UX — accepted
+  for a personal app (⚠️ B5 covers the enumeration angle if you go public).
+- Access/refresh token TTLs (30d/90d) and no server-side revocation stand (B1/O3) —
+  fine for LAN/self-host; revisit for public exposure.
+
+Backend re-verified after the fixes: `tsc` clean, **1650 Jest tests pass**, `next build`
+compiles.

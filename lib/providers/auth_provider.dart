@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/api_exception.dart';
 import '../models/user.dart';
 import 'providers.dart';
 
@@ -39,10 +40,20 @@ class AuthController extends StateNotifier<AuthState> {
     try {
       final user = await _ref.read(authRepositoryProvider).me();
       state = AuthState(status: AuthStatus.authenticated, user: user);
+    } on ApiException catch (e) {
+      if (e.isUnauthorized) {
+        // Token genuinely invalid and refresh failed → sign out.
+        await storage.clearTokens();
+        state = const AuthState(status: AuthStatus.unauthenticated);
+      } else {
+        // Transient (offline / server down / 5xx): keep the tokens and open the
+        // app optimistically. Data screens will show a retry; a later request
+        // refreshes or, if truly unauthorized, triggers sign-out then.
+        state = const AuthState(status: AuthStatus.authenticated, user: null);
+      }
     } catch (_) {
-      // Token invalid and refresh failed.
-      await storage.clearTokens();
-      state = const AuthState(status: AuthStatus.unauthenticated);
+      // Non-HTTP failure — treat as transient, keep the session.
+      state = const AuthState(status: AuthStatus.authenticated, user: null);
     }
   }
 

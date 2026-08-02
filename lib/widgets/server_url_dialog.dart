@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/config.dart';
+import '../providers/auth_provider.dart';
 import '../providers/providers.dart';
 
 /// Lets the user point the app at their FocusFlow backend. Persisted so it
@@ -57,7 +58,18 @@ Future<void> showServerUrlDialog(BuildContext context, WidgetRef ref) async {
   );
 
   if (result != null) {
-    ref.read(apiBaseProvider.notifier).state = result;
+    final previous = ref.read(apiBaseProvider);
     await ref.read(tokenStorageProvider).setBaseUrl(result);
+    ref.read(apiBaseProvider.notifier).state = result;
+
+    // Tokens are stored under a bare key with no origin component, and onRequest
+    // attaches them unconditionally — so pointing the app at a different host used
+    // to hand that host the previous server's 30-day access token, and its 90-day
+    // refresh token on the 401 that followed. Neither is revocable server-side.
+    // Signing out on an origin change keeps credentials with the server that
+    // issued them.
+    if (previous != result) {
+      await ref.read(authControllerProvider.notifier).logout();
+    }
   }
 }

@@ -107,13 +107,23 @@ class _GoalCard extends ConsumerWidget {
                 child: Text(goal.title,
                     style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
               ),
-              IconButton(
-                tooltip: p.isAchieved ? 'Reopen' : 'Mark achieved',
-                icon: Icon(p.isAchieved ? Icons.emoji_events : Icons.emoji_events_outlined,
-                    color: p.isAchieved ? color : scheme.outline),
-                onPressed: () =>
-                    run(() => ctrl.setStatus(goal.id, p.isAchieved ? 'active' : 'achieved')),
-              ),
+              // Driven by `status`, not the DERIVED p.isAchieved — the web GoalCard
+              // does the same. goalStats defines isAchieved as
+              // `status == 'achieved' || percent >= 100`, so a goal sitting at 100%
+              // while still active showed "Reopen" and sent {"status":"active"},
+              // writing back the value it already had. Sectioning keys off status,
+              // so the card never moved; a task-derived goal could not be marked
+              // achieved from the phone at all.
+              Builder(builder: (_) {
+                final achieved = goal.status == 'achieved';
+                return IconButton(
+                  tooltip: achieved ? 'Reopen' : 'Mark achieved',
+                  icon: Icon(achieved ? Icons.emoji_events : Icons.emoji_events_outlined,
+                      color: achieved ? color : scheme.outline),
+                  onPressed: () =>
+                      run(() => ctrl.setStatus(goal.id, achieved ? 'active' : 'achieved')),
+                );
+              }),
             ],
           ),
           const SizedBox(height: 8),
@@ -259,7 +269,12 @@ class _GoalEditorScreenState extends ConsumerState<GoalEditorScreen> {
       'progressType': _progressType,
       'targetDate': _targetDate != null ? Dates.ymd(_targetDate!) : null,
       if (_progressType == 'numeric') 'targetValue': double.tryParse(_target.text.trim()) ?? 1,
-      if (_progressType == 'numeric' && _unit.text.trim().isNotEmpty) 'unit': _unit.text.trim(),
+      // Send an explicit null when cleared, like `description` above. Omitting the
+      // key entirely meant goalService's `if (k in v)` allowlist never wrote it, so
+      // a numeric goal's unit could not be removed from the phone at all — only
+      // from the web, which posts `unit: ... || null`.
+      if (_progressType == 'numeric')
+        'unit': _unit.text.trim().isEmpty ? null : _unit.text.trim(),
       if (_progressType == 'manual') 'manualProgress': _manualProgress,
     };
     setState(() => _saving = true);
@@ -290,6 +305,16 @@ class _GoalEditorScreenState extends ConsumerState<GoalEditorScreen> {
   }
 
   Future<void> _archive() async {
+    // Archiving hides the goal from every mobile screen (getGoals filters
+    // status != 'archived') and the app ships no archived view, so from the phone
+    // this is effectively irreversible — it deserves the same confirm the adjacent
+    // Delete button already has.
+    final ok = await confirmDialog(
+      context,
+      title: 'Archive goal?',
+      message: 'It will be hidden from your goals list. You can restore it from the web app.',
+    );
+    if (!ok) return;
     try {
       await ref.read(goalsControllerProvider.notifier).setStatus(widget.goal!.id, 'archived');
       if (mounted) Navigator.of(context).pop();

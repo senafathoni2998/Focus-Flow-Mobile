@@ -114,7 +114,14 @@ class _ProgressBanner extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Weekly completion', style: TextStyle(fontWeight: FontWeight.w600)),
+          // Labelled for the ratio actually shown. `total` is the ALL-TIME task
+          // count (analyticsService counts every row, unfiltered by status or
+          // date) while `done` is scoped to 7 days, so calling this "Weekly
+          // completion" made a productive week read as almost no progress and the
+          // bar shrink forever as the archive grew. A genuinely weekly ratio needs
+          // the server to expose the open-task counts; until then, say what it is.
+          const Text('Completed this week, of all tasks',
+              style: TextStyle(fontWeight: FontWeight.w600)),
           const SizedBox(height: 10),
           ClipRRect(
             borderRadius: BorderRadius.circular(6),

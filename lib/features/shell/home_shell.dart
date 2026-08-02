@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../providers/auth_provider.dart';
 import '../../providers/dashboard_provider.dart';
 import '../../providers/goals_provider.dart';
 import '../../providers/habits_provider.dart';
+import '../../providers/lists_provider.dart';
+import '../../providers/tags_provider.dart';
 import '../../providers/tasks_provider.dart';
 import '../dashboard/dashboard_screen.dart';
 import '../goals/goals_screen.dart';
@@ -34,6 +37,17 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     switch (i) {
       case 0:
         ref.read(tasksControllerProvider.notifier).refresh();
+        // Tags and lists were fetched once per process in their constructors with
+        // no refresh path at all, so a tag created implicitly through the task
+        // editor never showed up as a filter chip or a suggestion until the app was
+        // restarted — and the user retyped it, creating case-variant duplicates.
+        ref.read(tagsControllerProvider.notifier).refresh();
+        ref.read(listsControllerProvider.notifier).refresh();
+        break;
+      case 4:
+        // Bootstrap may have opened the app optimistically without a profile
+        // (backend restarting → 502, not 401); this is the screen that shows it.
+        ref.read(authControllerProvider.notifier).refreshUser();
         break;
       case 1:
         ref.read(habitsControllerProvider.notifier).refresh();

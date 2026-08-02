@@ -22,8 +22,20 @@ class ListsController extends StateNotifier<AsyncValue<List<TaskList>>> {
     try {
       state = AsyncValue.data(await _repo.list());
     } catch (e, st) {
-      state = AsyncValue.error(e, st);
+      // Keep the cached list alongside the error. Replacing it outright collapsed
+      // the collection to [], so a mutation whose follow-up refresh failed (a POST
+      // that succeeded, then a Wi-Fi -> LTE handover) blanked the whole screen and
+      // read as "save failed" — inviting a duplicate.
+      state = state.hasValue
+          ? AsyncValue<List<TaskList>>.error(e, st).copyWithPrevious(state)
+          : AsyncValue.error(e, st);
     }
+  }
+
+  /// Like [refresh] but RETHROWS, so a mutation's caller can surface the failure
+  /// instead of it being swallowed into the state and the mutation looking fine.
+  Future<void> reload() async {
+    state = AsyncValue.data(await _repo.list());
   }
 
   Future<TaskList> create(String name, {String? color}) async {

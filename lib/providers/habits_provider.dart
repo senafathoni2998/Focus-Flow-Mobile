@@ -22,18 +22,30 @@ class HabitsController extends StateNotifier<AsyncValue<List<Habit>>> {
     try {
       state = AsyncValue.data(await _repo.list());
     } catch (e, st) {
-      state = AsyncValue.error(e, st);
+      // Keep the cached list alongside the error. Replacing it outright collapsed
+      // the collection to [], so a mutation whose follow-up refresh failed (a POST
+      // that succeeded, then a Wi-Fi -> LTE handover) blanked the whole screen and
+      // read as "save failed" — inviting a duplicate.
+      state = state.hasValue
+          ? AsyncValue<List<Habit>>.error(e, st).copyWithPrevious(state)
+          : AsyncValue.error(e, st);
     }
+  }
+
+  /// Like [refresh] but RETHROWS, so a mutation's caller can surface the failure
+  /// instead of it being swallowed into the state and the mutation looking fine.
+  Future<void> reload() async {
+    state = AsyncValue.data(await _repo.list());
   }
 
   Future<void> create(Map<String, dynamic> body) async {
     await _repo.create(body);
-    await refresh(); // pick up server-computed stats
+    await reload(); // pick up server-computed stats; rethrows so the caller sees failure
   }
 
   Future<void> update(String id, Map<String, dynamic> body) async {
     await _repo.update(id, body);
-    await refresh();
+    await reload();
   }
 
   Future<void> delete(String id) async {

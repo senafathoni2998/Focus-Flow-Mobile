@@ -8,6 +8,7 @@ import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
 import '../../providers/tasks_provider.dart';
 import '../../widgets/common.dart';
+import '../focus/focus_screen.dart';
 import 'task_card.dart';
 import 'task_editor_screen.dart';
 import 'tasks_drawer.dart';
@@ -114,6 +115,17 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
               },
             )
           else ...[
+            // Entry point for the pomodoro timer. It lives here rather than as a
+            // sixth bottom-nav destination — five is already the Material maximum
+            // and six labels crowd a 360dp screen — and this is where the intent
+            // starts, since a pomodoro is usually run FOR a task.
+            IconButton(
+              tooltip: 'Focus timer',
+              icon: const Icon(Icons.timer_outlined),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const FocusScreen()),
+              ),
+            ),
             IconButton(
               icon: const Icon(Icons.search),
               onPressed: () => setState(() => _searching = true),

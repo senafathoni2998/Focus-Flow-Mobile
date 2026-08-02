@@ -5,6 +5,7 @@ import 'core/theme.dart';
 import 'features/auth/login_screen.dart';
 import 'features/shell/home_shell.dart';
 import 'providers/auth_provider.dart';
+import 'providers/reminder_poller.dart';
 
 class FocusFlowApp extends StatelessWidget {
   const FocusFlowApp({super.key});
@@ -28,6 +29,10 @@ class AuthGate extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Instantiate the reminder poller once, above the screen swap, so it outlives
+    // navigation and starts/stops itself with the auth state.
+    ref.watch(reminderPollerProvider);
+
     final status = ref.watch(authControllerProvider).status;
     switch (status) {
       case AuthStatus.unknown:

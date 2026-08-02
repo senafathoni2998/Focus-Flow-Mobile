@@ -64,6 +64,23 @@ The app makes HTTP calls to your backend, so after `flutter create` edit
 
 Without both, every request fails on a real build with a connection error.
 
+### Enable reminder notifications — optional
+
+The app raises a device notification when a task's reminder time arrives while
+the app is open. Android 13 (API 33) and later also need the permission declared
+alongside `INTERNET`:
+
+```xml
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+```
+
+The app requests the runtime grant on first launch. Without the declaration the
+prompt never appears and reminders stay silent — everything else keeps working.
+
+> **Foreground only.** Reminders fire while the app is running, mirroring the web
+> app's in-app dispatcher. Waking a closed app needs a push transport (FCM) and a
+> backend that can reach Google, which a self-hosted deployment may not want.
+
 ## Point the app at your backend
 
 The API origin is configurable (no rebuild needed):

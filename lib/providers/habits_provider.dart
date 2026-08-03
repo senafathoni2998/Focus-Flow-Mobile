@@ -58,6 +58,14 @@ class HabitsController extends StateNotifier<AsyncValue<List<Habit>>> {
     state = AsyncValue.data(_current.where((h) => h.id != id).toList());
   }
 
+  /// Bring an archived habit back. `archive(id, false)` was always supported by
+  /// the API; there was simply no way to reach it, because nothing could list an
+  /// archived habit in the first place.
+  Future<void> unarchive(String id) async {
+    await _repo.archive(id, false);
+    await reload();
+  }
+
   /// Check in [delta] (default +1) today. Replaces the habit with the returned
   /// one (which carries recomputed stats).
   Future<void> checkIn(String id, {int delta = 1}) async {
@@ -68,3 +76,8 @@ class HabitsController extends StateNotifier<AsyncValue<List<Habit>>> {
 
 final habitsControllerProvider =
     StateNotifierProvider<HabitsController, AsyncValue<List<Habit>>>((ref) => HabitsController(ref));
+
+/// Archived habits, fetched on demand by the Archived screen.
+final archivedHabitsProvider = FutureProvider.autoDispose<List<Habit>>((ref) {
+  return ref.watch(habitRepositoryProvider).archived();
+});

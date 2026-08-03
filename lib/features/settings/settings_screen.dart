@@ -5,6 +5,7 @@ import '../../providers/auth_provider.dart';
 import '../../providers/providers.dart';
 import '../../widgets/common.dart';
 import '../../widgets/server_url_dialog.dart';
+import '../archived/archived_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -24,6 +25,17 @@ class SettingsScreen extends ConsumerWidget {
             leading: const Icon(Icons.person_outline),
             title: Text(user?.name?.isNotEmpty == true ? user!.name! : 'FocusFlow user'),
             subtitle: Text(user?.email ?? ''),
+          ),
+          const Divider(),
+          _SectionHeader('Data'),
+          ListTile(
+            leading: const Icon(Icons.archive_outlined),
+            title: const Text('Archived'),
+            subtitle: const Text('Restore goals and habits you put away'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ArchivedScreen()),
+            ),
           ),
           const Divider(),
           _SectionHeader('Server'),

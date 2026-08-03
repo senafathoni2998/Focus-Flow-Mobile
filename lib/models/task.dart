@@ -12,6 +12,9 @@ class Tag {
         name: asString(j['name']),
         color: asStringOrNull(j['color']),
       );
+
+  Map<String, dynamic> toJson() =>
+      <String, dynamic>{'id': id, 'name': name, 'color': color};
 }
 
 class RecurrenceSummary {
@@ -23,6 +26,9 @@ class RecurrenceSummary {
         freq: asString(j['freq']),
         interval: j['interval'] == null ? null : asInt(j['interval']),
       );
+
+  Map<String, dynamic> toJson() =>
+      <String, dynamic>{'freq': freq, 'interval': interval};
 }
 
 class ReminderSummary {
@@ -34,6 +40,11 @@ class ReminderSummary {
         id: asString(j['id']),
         triggerAt: Dates.parse(j['triggerAt']) ?? DateTime.now(),
       );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'triggerAt': Dates.utcIso(triggerAt),
+      };
 }
 
 class Task {
@@ -110,4 +121,36 @@ class Task {
             : null,
         reminders: asMapList(j['reminders']).map(ReminderSummary.fromJson).toList(),
       );
+
+  /// The inverse of [Task.fromJson], field for field.
+  ///
+  /// Exists for the offline write queue's overlay, which applies a PATCH body to
+  /// a task by round-tripping it through JSON. That is done rather than with a
+  /// 20-field `copyWith` because the wire shapes genuinely differ from the model
+  /// — `body['tags']` is a list of NAMES where `Task.tags` is a list of [Tag],
+  /// and `body['recurrence']` is a bare freq string where `Task.recurrence` is an
+  /// object — so one explicit mapping is easier to verify than a `copyWith` with
+  /// a null-clearing sentinel per field.
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'title': title,
+        'description': description,
+        'status': status,
+        'priority': priority,
+        'dueDate': dueDate?.toIso8601String(),
+        'startDate': startDate?.toIso8601String(),
+        'isAllDay': isAllDay,
+        'completedAt': completedAt?.toIso8601String(),
+        'order': order,
+        'priorityRank': priorityRank,
+        'timeEstimateMin': timeEstimateMin,
+        'estimatedPomos': estimatedPomos,
+        'actualMin': actualMin,
+        'parentTaskId': parentTaskId,
+        'listId': listId,
+        'goalId': goalId,
+        'tags': tags.map((Tag t) => t.toJson()).toList(),
+        'recurrence': recurrence?.toJson(),
+        'reminders': reminders.map((ReminderSummary r) => r.toJson()).toList(),
+      };
 }

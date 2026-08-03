@@ -6,6 +6,7 @@ import '../core/offline/queue_op.dart';
 import '../core/offline/task_overlay.dart';
 import '../core/offline/write_queue_store.dart';
 import 'providers.dart';
+import 'lists_provider.dart';
 import 'tasks_provider.dart';
 
 /// Riverpod wiring for the offline write queue.
@@ -39,16 +40,31 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
       ref.read(inFlightOpIdProvider.notifier).state = inFlightOpId;
       ref.read(queueStateProvider.notifier).state = state;
     },
-    onServerTask: (Map<String, dynamic> taskJson) {
+    onServerRow: (OpEntity entity, Map<String, dynamic> row) {
       // Written into server truth in the same turn the op leaves the queue, so
       // the row never blinks out between "acked" and "authoritative".
-      ref.read(tasksControllerProvider.notifier).upsertFromServer(taskJson);
+      switch (entity) {
+        case OpEntity.task:
+          ref.read(tasksControllerProvider.notifier).upsertFromServer(row);
+        case OpEntity.list:
+          ref.read(listsControllerProvider.notifier).upsertFromServer(row);
+      }
     },
-    onDrained: () {
+    onDrained: (Set<OpEntity> touched) {
       // Everything the queue guessed at locally — order, tag ids, a recurring
-      // task's next date — is only knowable from the server, so reconcile once
-      // the queue is empty rather than after each op.
-      ref.read(tasksControllerProvider.notifier).refresh();
+      // task's next date, a list's server id — is only knowable from the server,
+      // so reconcile once the queue is empty rather than after each op. Only the
+      // entities that actually changed: refreshing all of them every time would
+      // be several requests where one is needed.
+      if (touched.contains(OpEntity.task)) {
+        ref.read(tasksControllerProvider.notifier).refresh();
+      }
+      if (touched.contains(OpEntity.list)) {
+        // A list DELETE re-parents its tasks to the Inbox through a database
+        // cascade the service never mentions, so tasks are stale too.
+        ref.read(listsControllerProvider.notifier).refresh();
+        ref.read(tasksControllerProvider.notifier).refresh();
+      }
     },
   );
   ref.onDispose(flusher.dispose);
@@ -62,15 +78,25 @@ final unsentCountProvider = Provider<int>((ref) =>
 final failedCountProvider =
     Provider<int>((ref) => ref.watch(deadOpsProvider).length);
 
-/// Row badges, keyed by task id (local and mapped).
-final taskPendingStateProvider = Provider<Map<String, PendingState>>((ref) {
-  return pendingStateByTaskId(
-    ref.watch(pendingOpsProvider),
-    ref.watch(deadOpsProvider),
-    ref.watch(inFlightOpIdProvider),
-    ref.watch(queueIdMapProvider),
-  );
-});
+/// Row badges, keyed by id within ONE entity's namespace.
+///
+/// Separate maps per entity on purpose: tasks and lists have independent id
+/// spaces, so a single flat map would put a list id somewhere a task lookup
+/// could find it.
+Map<String, PendingState> _badges(Ref ref, OpEntity entity) =>
+    pendingStateByEntityId(
+      entity,
+      ref.watch(pendingOpsProvider),
+      ref.watch(deadOpsProvider),
+      ref.watch(inFlightOpIdProvider),
+      ref.watch(queueIdMapProvider),
+    );
+
+final taskPendingStateProvider =
+    Provider<Map<String, PendingState>>((ref) => _badges(ref, OpEntity.task));
+
+final listPendingStateProvider =
+    Provider<Map<String, PendingState>>((ref) => _badges(ref, OpEntity.list));
 
 /// Mounted once above the screen swap, beside the reminder poller.
 ///

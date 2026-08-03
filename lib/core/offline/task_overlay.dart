@@ -151,10 +151,14 @@ List<Task> applyQueue(
   List<QueuedOp> ops,
   Map<String, String> idMap,
 ) {
-  if (ops.isEmpty) return server;
-
-  final List<QueuedOp> ordered = List<QueuedOp>.from(ops)
+  // Ops for other entities are filtered out rather than defaulted past. A list
+  // op folded through here would find no matching row and quietly do nothing,
+  // which reads as working; dropping it explicitly says what is happening.
+  final List<QueuedOp> ordered = ops
+      .where((QueuedOp o) => o.entity == OpEntity.task)
+      .toList()
     ..sort((QueuedOp a, QueuedOp b) => a.seq.compareTo(b.seq));
+  if (ordered.isEmpty) return server;
 
   // Work in JSON so a PATCH body can be applied with the server's own semantics
   // rather than a hand-written 20-field copyWith.
@@ -219,6 +223,12 @@ List<Task> applyQueue(
           rows.removeWhere(
               (Map<String, dynamic> r) => r['parentTaskId'] == goneId);
         }
+
+      case OpKind.createList:
+      case OpKind.deleteList:
+        // Filtered out above; listed so a new entity cannot be added without
+        // the compiler asking what this overlay should do about it.
+        break;
     }
   }
 
@@ -229,7 +239,8 @@ List<Task> applyQueue(
 ///
 /// Dead ops are included by the caller, so a task the user typed offline and the
 /// server then rejected keeps its row and turns amber instead of vanishing.
-Map<String, PendingState> pendingStateByTaskId(
+Map<String, PendingState> pendingStateByEntityId(
+  OpEntity entity,
   List<QueuedOp> pending,
   List<QueuedOp> dead,
   String? inFlightOpId,
@@ -238,7 +249,10 @@ Map<String, PendingState> pendingStateByTaskId(
   final Map<String, PendingState> out = <String, PendingState>{};
 
   void mark(QueuedOp op, PendingState state) {
-    final String id = op.kind == OpKind.createTask ? (op.assigns ?? '') : op.target;
+    // One map per entity. Tasks and lists have separate id namespaces, so a
+    // single flat map would put a list id where a task lookup could find it.
+    if (op.entity != entity) return;
+    final String id = op.assigns ?? op.target;
     if (id.isEmpty) return;
     // `failed` outranks `sending`, which outranks `queued`: a row with one dead
     // op and one waiting op is a problem the user needs to see.

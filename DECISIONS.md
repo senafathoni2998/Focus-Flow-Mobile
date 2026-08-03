@@ -109,8 +109,8 @@ Fine for sideloading. **❓ Change the package id before any Play Store upload.*
 
 ---
 
-**F7. The offline write queue covers FOUR task operations, and nothing else — on purpose.** ✅
-Create, edit, complete and delete a task are queued; every other write stays online-only.
+**F7. The offline write queue covers four TASK operations and two LIST operations — and
+nothing else, on purpose.** ✅
 This list is a set of decisions, not a to-do list. Read the reason before "finishing" it:
 
 | Operation | Verdict | Why |
@@ -121,7 +121,10 @@ This list is a set of decisions, not a to-do list. Read the reason before "finis
 | `DELETE /tasks/:id` | **queued** | No key needed: the queue treats 404 as success. Ids are server cuids and never reused, so a 404 can only mean "already deleted". |
 | `POST /tasks/reorder` | online-only | `newOrder` is an absolute position computed against a list the queue is about to change (`createTask` assigns `max(order)+10` server-side, invisible offline). It also has no caller anywhere in `lib/`, so refusing costs zero UX. |
 | `POST /habits/:id/checkin`, `POST /goals/:id/progress` | online-only | The WIRE is safe — both are key-wrapped. The **UI** is not: neither has a local projection, so offline the tile does not move, the user taps again, and that is two ops with two DIFFERENT keys. An idempotency key defends against retry duplication, never against duplicate intent our own UI manufactured. Queue these only once habits and goals render a pending delta. |
-| Create/edit/delete list, goal, habit, tag, saved filter | online-only (phase 2) | A blast-radius objection, not a contract one. Each opens a second local-id namespace with cross-entity references (`task.listId` pointing at a local list id). Additive later: add the key to `kIdBearingBodyKeys` and give the entity an overlay. |
+| `POST /lists` | **queued** | Key mandatory, same argument as `POST /tasks`. This is the entity that opens the SECOND local-id namespace: a task filed into it carries `listId: 'local_…'`, which is why `listId` is in `kIdBearingBodyKeys` (substitution) AND in `_depsFor` (blocking). Substitution alone is not enough — without the dep edge the task could be dispatched before its list existed, and FIFO only happens to save that case. |
+| `DELETE /lists/:id` | **queued** | No key needed; 404 counts as success for any delete. Note the blast radius: `onDelete: SetNull` at the DATABASE level re-parents every task in that list to the Inbox. That cascade appears nowhere in `listService.ts`, so anyone reading the service alone will miss it — which is why draining a list op refreshes tasks too. |
+| `PATCH /lists/:id` | online-only | Not a contract objection: the wire is the safest of the lot, two absolute scalar assignments. `ListsController.update` simply has **no caller anywhere in the app**. Queueing it would build an offline path for something the UI cannot do online either. |
+| Create/edit/delete goal, habit, tag, saved filter | online-only (later) | Each needs its own overlay, seam and `toJson` before it is safe, and each has a specific trap: goal create/PATCH return raw rows with no `progress` (folding one in shows 0%), habit ones return no `stats` (folding one blanks the streak), and tags have no POST at all — a tag is created as a side effect of writing a task's `tags` list, so tag creation is ALREADY covered and needs no op kind. A queued tag delete additionally fights any queued task write naming that tag, and the tag always wins. |
 | `POST /sessions` and friends | online-only, **blocked on the server** | `startSchema` has no `startTime` and `startSession` stamps `new Date()`. A flight's pomodoros would all land at the instant the wifi connected, putting hours of focus time on the wrong day in every analytics chart. Unblocking is a one-line server change (accept an optional client `startTime`, clamped to `<= now`). |
 | `POST /chat` | online-only | The response IS the request's purpose. |
 | `POST /reminders/dispatch` | online-only | A server-side "I showed this" marker whose read half needs the network anyway. |
@@ -143,6 +146,16 @@ Supporting rules, each preventing something specific:
 - **Signing out RETAINS the queue** unless the user explicitly chooses to discard it. It is
   their own unsent work, not the server's cached data, and the two must not share a policy.
   The file stays scoped, and the flusher re-checks the signed-in user before every request.
+- **A 409 is only retryable when it carries `Retry-After`.** Six endpoints answer 409 and
+  exactly one — `idempotency.ts`, "still in progress" — sets that header. The other five are
+  permanent conflicts: a tag or saved-view name already taken, an email already registered, a
+  session that is not running. Retrying those burned the whole pending budget and then
+  dead-lettered them as "we couldn't confirm this was saved", behind a Retry button that could
+  never work.
+- **The on-disk format version is bumped whenever an `OpKind` is added.** Reading forward is
+  safe; reading BACKWARD is not, because an older build hits the tolerant "drop one unreadable
+  row" path and silently discards the user's work. An unknown version makes it set the whole
+  file aside instead.
 
 ## Not in this version (scoped out; all are additive later)
 

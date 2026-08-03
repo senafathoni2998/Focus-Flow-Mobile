@@ -6,7 +6,6 @@ import '../../core/date_format.dart';
 import '../../models/task.dart';
 import '../../providers/filter_provider.dart';
 import '../../providers/goals_provider.dart';
-import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
 import '../../core/offline/queue_flusher.dart';
 import '../../providers/tasks_provider.dart';
@@ -170,7 +169,7 @@ class _TaskEditorScreenState extends ConsumerState<TaskEditorScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final lists = ref.watch(listsControllerProvider).value ?? const [];
+    final lists = ref.watch(allListsProvider);
     final goals = ref.watch(goalsControllerProvider).value ?? const [];
     final knownTags = ref.watch(tagsControllerProvider).value ?? const [];
     final suggestions = knownTags.where((t) => !_tags.contains(t.name)).take(8).toList();

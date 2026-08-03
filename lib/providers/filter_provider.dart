@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../core/horizons.dart';
 import '../models/task.dart';
+import '../core/offline/list_overlay.dart';
 import '../core/offline/task_overlay.dart';
+import '../models/task_list.dart';
+import 'lists_provider.dart';
 import 'tasks_provider.dart';
 import 'write_queue_provider.dart';
 
@@ -70,6 +73,17 @@ final allTasksProvider = Provider<List<Task>>((ref) {
   final idMap = ref.watch(queueIdMapProvider);
   if (pending.isEmpty && dead.isEmpty) return server;
   return applyQueue(server, [...pending, ...dead], idMap);
+});
+
+/// Server truth for lists with pending creates and deletes folded on top.
+/// Every list reader watches this, never `listsControllerProvider` directly.
+final allListsProvider = Provider<List<TaskList>>((ref) {
+  final server = ref.watch(listsControllerProvider).value ?? const <TaskList>[];
+  final pending = ref.watch(pendingOpsProvider);
+  final dead = ref.watch(deadOpsProvider);
+  final idMap = ref.watch(queueIdMapProvider);
+  if (pending.isEmpty && dead.isEmpty) return server;
+  return applyListQueue(server, [...pending, ...dead], idMap);
 });
 
 /// The filtered + sorted top-level tasks for the current selection.

@@ -16,9 +16,25 @@ import 'dart:math';
 /// under a given key are identical on every attempt and that 422 is structurally
 /// unreachable rather than merely unlikely.
 
-/// The four task writes queued in phase 1. Everything else is online-only; see
-/// DECISIONS.md F7 for the per-operation refusals and why each one was refused.
-enum OpKind { createTask, updateTask, completeTask, deleteTask }
+/// Which entity an op acts on. Derived from [OpKind] rather than stored, so the
+/// two can never disagree on disk.
+enum OpEntity { task, list }
+
+/// Every queued write. Everything NOT here is online-only on purpose; see
+/// DECISIONS.md F7 for the per-operation refusals and the reason for each.
+///
+/// Values are appended, never renamed or reordered: the name is what is written
+/// to disk. A build that does not know a kind drops the row, which is why adding
+/// any value also bumps kQueueFormatVersion — an older build then sets the whole
+/// file aside instead of silently discarding the user's work.
+enum OpKind {
+  createTask,
+  updateTask,
+  completeTask,
+  deleteTask,
+  createList,
+  deleteList,
+}
 
 /// What the flusher decided about one send.
 enum OpOutcome {
@@ -196,17 +212,28 @@ class QueuedOp {
   final DeadReason? reason;
   final int? diedAtMs;
 
-  String get method {
-    switch (kind) {
-      case OpKind.createTask:
-      case OpKind.completeTask:
-        return 'POST';
-      case OpKind.updateTask:
-        return 'PATCH';
-      case OpKind.deleteTask:
-        return 'DELETE';
-    }
-  }
+  OpEntity get entity => switch (kind) {
+        OpKind.createTask ||
+        OpKind.updateTask ||
+        OpKind.completeTask ||
+        OpKind.deleteTask =>
+          OpEntity.task,
+        OpKind.createList || OpKind.deleteList => OpEntity.list,
+      };
+
+  /// True for any delete, whatever the entity.
+  ///
+  /// Read by [classify], which forgives a 404 only here. Gating that on
+  /// `kind == OpKind.deleteTask` — as it did while tasks were the only entity —
+  /// would dead-letter a re-sent list delete with "List not found", for a list
+  /// that IS gone, behind a Retry button that could never succeed.
+  bool get isDelete => kind == OpKind.deleteTask || kind == OpKind.deleteList;
+
+  String get method => switch (kind) {
+        OpKind.createTask || OpKind.completeTask || OpKind.createList => 'POST',
+        OpKind.updateTask => 'PATCH',
+        OpKind.deleteTask || OpKind.deleteList => 'DELETE',
+      };
 
   bool get carriesKey => key != null;
 
@@ -368,7 +395,14 @@ List<String> unresolvedDeps(QueuedOp op, Map<String, String> idMap) {
 /// Phase 1 is `parentTaskId` alone: `listId` and `goalId` always hold server ids
 /// because lists and goals are not queued yet. Phase 2 adds them here and
 /// nothing else in the algorithm changes.
-const List<String> kIdBearingBodyKeys = <String>['parentTaskId'];
+/// Body keys whose VALUE may be a local id and must be substituted at dispatch.
+///
+/// `listId` is here because a list can now be created offline, so the task
+/// editor can put `listId: 'local_…'` into a queued task body. `goalId` is NOT
+/// here, deliberately: goals are not queueable yet, so nothing can produce a
+/// local goal id and an entry for it would be protection that looks real and
+/// covers nothing. It goes in with the goal queue, in the same change.
+const List<String> kIdBearingBodyKeys = <String>['parentTaskId', 'listId'];
 
 /// Substitute local ids into a throwaway request. Returns [Resolution.blocked]
 /// if any is still unknown — the caller must then FAIL CLOSED rather than send.
@@ -415,6 +449,14 @@ Resolution resolve(QueuedOp op, Map<String, String> idMap) {
     OpKind.createTask => '/tasks',
     OpKind.updateTask || OpKind.deleteTask => '/tasks/$target',
     OpKind.completeTask => '/tasks/$target/complete',
+    OpKind.createList => '/lists',
+    OpKind.deleteList => '/lists/$target',
+  };
+
+  final String? idPath = switch (op.kind) {
+    OpKind.createTask => 'task.id',
+    OpKind.createList => 'list.id',
+    _ => null,
   };
 
   return Resolution.ready(ResolvedOp(
@@ -422,7 +464,7 @@ Resolution resolve(QueuedOp op, Map<String, String> idMap) {
     path: path,
     body: body,
     key: op.key,
-    idPath: op.kind == OpKind.createTask ? 'task.id' : null,
+    idPath: idPath,
   ));
 }
 
@@ -436,6 +478,7 @@ OpOutcome classify({
   required OpKind kind,
   required int? status,
   required bool hadResponse,
+  bool hasRetryAfter = false,
 }) {
   if (!hadResponse || status == null) return OpOutcome.retryTransport;
   if (status >= 200 && status < 300) return OpOutcome.succeeded;
@@ -444,13 +487,26 @@ OpOutcome classify({
   // are server cuids and are never reused, so a 404 here can only mean "already
   // deleted" — not "you are deleting someone else's row".
   //
-  // This is SUCCESS FOR DELETE ONLY. A 404 on a complete means the completion
+  // This is SUCCESS FOR DELETES ONLY. A 404 on a complete means the completion
   // was never recorded; calling that success would drop the op, drop its
   // optimistic row, and un-tick the checkbox on the next refresh with no trace.
-  if (status == 404 && kind == OpKind.deleteTask) return OpOutcome.succeeded;
+  if (status == 404 && _isDeleteKind(kind)) return OpOutcome.succeeded;
 
   if (status == 401) return OpOutcome.authPaused;
-  if (status == 409) return OpOutcome.retryPending;
+
+  // 409 MEANS TWO DIFFERENT THINGS AND ONLY ONE IS RETRYABLE.
+  //
+  // `idempotency.ts` answers 409 with `Retry-After: 1` when a request under this
+  // key is still in flight — genuinely transient, worth waiting for. Every OTHER
+  // 409 in the API is a permanent conflict that no amount of retrying can fix:
+  // a tag or saved-view name already taken, an email already registered, a
+  // session that is not running. Treating those as retryable burned all six
+  // pending attempts, then dead-lettered them as "We couldn't confirm this was
+  // saved" — the wrong message, behind a Retry button that could never work.
+  // The header is the discriminator, because it is the only thing that differs.
+  if (status == 409) {
+    return hasRetryAfter ? OpOutcome.retryPending : OpOutcome.terminal;
+  }
   if (status == 408 || status == 429 || status >= 500) return OpOutcome.retryServer;
   return OpOutcome.terminal;
 }
@@ -473,6 +529,9 @@ bool isDue(QueuedOp op, int nowMs) {
   if (op.nextAtMs <= nowMs) return true;
   return op.nextAtMs - nowMs > kMaxBackoff.inMilliseconds;
 }
+
+bool _isDeleteKind(OpKind kind) =>
+    kind == OpKind.deleteTask || kind == OpKind.deleteList;
 
 bool isExpired(QueuedOp op, int nowMs) =>
     nowMs - op.createdAtMs > const Duration(days: kExpiryDays).inMilliseconds;
@@ -538,18 +597,29 @@ List<QueuedOp>? cancelCreateThenDelete(List<QueuedOp> ops, String localId) {
 // --- summaries ---------------------------------------------------------------
 
 String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle) {
-  final Object? raw = body == null ? null : body['title'];
-  final String title =
+  // Tasks carry `title`, lists carry `name`. Reading only `title` made every
+  // queued list op render as 'New task "a task"' in Unsent changes — and the
+  // summary is minted at enqueue precisely because the entity may not exist
+  // anywhere by the time it fails, so it cannot be patched at render time.
+  final Object? raw =
+      body == null ? null : (body['title'] ?? body['name']);
+  final String label =
       raw is String && raw.trim().isNotEmpty ? raw.trim() : fallbackTitle;
-  final String subject = title.isEmpty ? 'a task' : '"$title"';
-  switch (kind) {
-    case OpKind.createTask:
-      return 'New task $subject';
-    case OpKind.updateTask:
-      return 'Edit $subject';
-    case OpKind.completeTask:
-      return 'Complete $subject';
-    case OpKind.deleteTask:
-      return 'Delete $subject';
-  }
+  final String noun = switch (kind) {
+    OpKind.createTask ||
+    OpKind.updateTask ||
+    OpKind.completeTask ||
+    OpKind.deleteTask =>
+      'task',
+    OpKind.createList || OpKind.deleteList => 'list',
+  };
+  final String subject = label.isEmpty ? 'a $noun' : '"$label"';
+  return switch (kind) {
+    OpKind.createTask => 'New task $subject',
+    OpKind.updateTask => 'Edit $subject',
+    OpKind.completeTask => 'Complete $subject',
+    OpKind.deleteTask => 'Delete $subject',
+    OpKind.createList => 'New list $subject',
+    OpKind.deleteList => 'Delete list $subject',
+  };
 }

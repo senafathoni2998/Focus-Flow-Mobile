@@ -312,7 +312,8 @@ void main() {
 
   group('pendingStateByTaskId', () {
     test('failed outranks sending, which outranks queued', () {
-      final Map<String, PendingState> s = pendingStateByTaskId(
+      final Map<String, PendingState> s = pendingStateByEntityId(
+        OpEntity.task,
         <QueuedOp>[
           op(id: 'a', seq: 1, kind: OpKind.updateTask, target: 'srv1'),
           op(id: 'b', seq: 2, kind: OpKind.completeTask, target: 'srv2'),
@@ -327,7 +328,8 @@ void main() {
     });
 
     test('a dead op on a row that also has a pending op still reads as failed', () {
-      final Map<String, PendingState> s = pendingStateByTaskId(
+      final Map<String, PendingState> s = pendingStateByEntityId(
+        OpEntity.task,
         <QueuedOp>[op(id: 'a', seq: 1, kind: OpKind.updateTask, target: 'srv1')],
         <QueuedOp>[op(id: 'c', seq: 2, kind: OpKind.completeTask, target: 'srv1')],
         null,
@@ -337,7 +339,8 @@ void main() {
     });
 
     test('a create is keyed by the local id it assigns, and by its mapping', () {
-      final Map<String, PendingState> s = pendingStateByTaskId(
+      final Map<String, PendingState> s = pendingStateByEntityId(
+        OpEntity.task,
         <QueuedOp>[
           op(id: 'a', seq: 1, kind: OpKind.createTask, assigns: 'local_a')
         ],

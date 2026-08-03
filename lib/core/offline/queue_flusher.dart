@@ -95,14 +95,14 @@ class QueueFlusher {
     required Future<String?> Function() currentUserId,
     required void Function(QueueDoc doc, String? inFlightOpId, FlushState state)
         onChanged,
-    required void Function(Map<String, dynamic> taskJson) onServerTask,
-    required void Function() onDrained,
+    required void Function(OpEntity entity, Map<String, dynamic> row) onServerRow,
+    required void Function(Set<OpEntity> touched) onDrained,
     int Function() nowMs = _realNow,
   })  : _store = store,
         _transport = transport,
         _currentUserId = currentUserId,
         _onChanged = onChanged,
-        _onServerTask = onServerTask,
+        _onServerRow = onServerRow,
         _onDrained = onDrained,
         _nowMs = nowMs;
 
@@ -111,8 +111,8 @@ class QueueFlusher {
   final Future<String?> Function() _currentUserId;
   final void Function(QueueDoc doc, String? inFlightOpId, FlushState state)
       _onChanged;
-  final void Function(Map<String, dynamic> taskJson) _onServerTask;
-  final void Function() _onDrained;
+  final void Function(OpEntity entity, Map<String, dynamic> row) _onServerRow;
+  final void Function(Set<OpEntity> touched) _onDrained;
   final int Function() _nowMs;
 
   QueueDoc _doc = const QueueDoc();
@@ -132,6 +132,12 @@ class QueueFlusher {
   /// writes. It only spaces the attempts out, so a dead network is polled at a
   /// widening interval instead of on every trigger. Reset by any success.
   int _offlineStreak = 0;
+
+  /// Entities whose rows changed since the last drain. `onDrained` refreshes
+  /// exactly these — a full refresh of everything on every drain would be four
+  /// requests where one is needed, and refreshing only tasks (as it did) left a
+  /// list created offline showing its local id until the user changed tabs.
+  final Set<OpEntity> _touched = <OpEntity>{};
 
   FlushState get state => _state;
   QueueDoc get doc => _doc;
@@ -206,9 +212,14 @@ class QueueFlusher {
       final Resolution r = resolve(op, const <String, String>{});
       if (!r.isReady) throw ApiException('This change is missing its task.');
       final TransportResult res = await _send(r.op!);
-      if (classify(kind: op.kind, status: res.status, hadResponse: res.hadResponse) ==
+      if (classify(
+            kind: op.kind,
+            status: res.status,
+            hadResponse: res.hadResponse,
+            hasRetryAfter: res.retryAfterSeconds != null,
+          ) ==
           OpOutcome.succeeded) {
-        _emitServerTask(res);
+        _emitServerRow(op, res);
         return (outcome: SubmitOutcome.sent, response: res.body);
       }
       throw ApiException(
@@ -277,14 +288,22 @@ class QueueFlusher {
       final TransportResult res = await _send(r.op!);
       _inFlightOpId = null;
 
-      final OpOutcome outcome =
-          classify(kind: head.kind, status: res.status, hadResponse: res.hadResponse);
+      final OpOutcome outcome = classify(
+        kind: head.kind,
+        status: res.status,
+        hadResponse: res.hadResponse,
+        hasRetryAfter: res.retryAfterSeconds != null,
+      );
 
       switch (outcome) {
         case OpOutcome.succeeded:
           await _succeedHead(res, r.op!);
           _state = FlushState.idle;
-          if (_doc.ops.isEmpty) _onDrained();
+          if (_doc.ops.isEmpty && _touched.isNotEmpty) {
+            final Set<OpEntity> touched = Set<OpEntity>.from(_touched);
+            _touched.clear();
+            _onDrained(touched);
+          }
           return (outcome: SubmitOutcome.sent, response: res.body);
 
         case OpOutcome.terminal:
@@ -371,7 +390,11 @@ class QueueFlusher {
       if (_doc.ops.isEmpty) {
         _state = FlushState.idle;
         _emit();
-        _onDrained();
+        if (_touched.isNotEmpty) {
+          final Set<OpEntity> touched = Set<OpEntity>.from(_touched);
+          _touched.clear();
+          _onDrained(touched);
+        }
         return;
       }
 
@@ -408,8 +431,12 @@ class QueueFlusher {
       final TransportResult res = await _send(r.op!);
       _inFlightOpId = null;
 
-      final OpOutcome outcome =
-          classify(kind: head.kind, status: res.status, hadResponse: res.hadResponse);
+      final OpOutcome outcome = classify(
+        kind: head.kind,
+        status: res.status,
+        hadResponse: res.hadResponse,
+        hasRetryAfter: res.retryAfterSeconds != null,
+      );
 
       switch (outcome) {
         case OpOutcome.succeeded:
@@ -515,12 +542,23 @@ class QueueFlusher {
     // pointing at a local id that resolves to nothing.
     await _commit(_doc.copyWith(ops: remaining, idMap: idMap));
     _offlineStreak = 0;
-    _emitServerTask(res);
+    _touched.add(head.entity);
+    _emitServerRow(head, res);
   }
 
-  void _emitServerTask(TransportResult res) {
-    final Object? task = res.body?['task'];
-    if (task is Map) _onServerTask(Map<String, dynamic>.from(task));
+  /// Route an acked response to whichever controller owns that entity.
+  ///
+  /// The envelope key differs per entity (`{task: …}`, `{list: …}`), so this
+  /// reads the one belonging to the op that was sent. Reading only `task` — as
+  /// it did while tasks were the only entity — silently dropped a list create's
+  /// response, and the drawer never learned the row's real id from the queue.
+  void _emitServerRow(QueuedOp op, TransportResult res) {
+    final String envelope = switch (op.entity) {
+      OpEntity.task => 'task',
+      OpEntity.list => 'list',
+    };
+    final Object? row = res.body?[envelope];
+    if (row is Map) _onServerRow(op.entity, Map<String, dynamic>.from(row));
   }
 
   /// Charge an attempt. Returns true if the op is still pending, false if the

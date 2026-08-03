@@ -82,12 +82,20 @@ class TasksController extends StateNotifier<AsyncValue<List<Task>>> {
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
 
+  /// Every local id this op references.
+  ///
+  /// `deps` is what BLOCKS dispatch; `kIdBearingBodyKeys` only substitutes. Both
+  /// are needed and they are not the same thing: without the dep edge a task
+  /// carrying `listId: 'local_…'` could be sent before its list existed, and
+  /// FIFO ordering only happens to save that case — which is luck, not design.
   List<String> _depsFor(String target, Map<String, dynamic>? body) {
     final List<String> deps = <String>[];
     if (target.isNotEmpty && isLocalId(target)) deps.add(target);
-    final Object? parent = body == null ? null : body['parentTaskId'];
-    if (parent is String && isLocalId(parent) && !deps.contains(parent)) {
-      deps.add(parent);
+    if (body != null) {
+      for (final String field in kIdBearingBodyKeys) {
+        final Object? v = body[field];
+        if (v is String && isLocalId(v) && !deps.contains(v)) deps.add(v);
+      }
     }
     return deps;
   }

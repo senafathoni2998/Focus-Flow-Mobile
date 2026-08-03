@@ -81,8 +81,12 @@ void main() {
           OpOutcome.succeeded);
     });
 
-    test('404 is success for DELETE only', () {
+    test('404 is success for DELETES of any entity', () {
       expect(classify(kind: OpKind.deleteTask, status: 404, hadResponse: true),
+          OpOutcome.succeeded);
+      // Gating this on deleteTask alone dead-lettered a re-sent list delete
+      // with "List not found", for a list that IS gone.
+      expect(classify(kind: OpKind.deleteList, status: 404, hadResponse: true),
           OpOutcome.succeeded);
       // A completion the server never recorded must NOT be swallowed as success:
       // the op would be dropped and the checkbox would silently un-tick.
@@ -106,9 +110,32 @@ void main() {
       }
     });
 
-    test('409 is its own outcome, and 401 pauses', () {
-      expect(classify(kind: OpKind.createTask, status: 409, hadResponse: true),
-          OpOutcome.retryPending);
+    test('a 409 WITH Retry-After is the idempotency claim, and is retryable', () {
+      expect(
+        classify(
+            kind: OpKind.createTask,
+            status: 409,
+            hadResponse: true,
+            hasRetryAfter: true),
+        OpOutcome.retryPending,
+      );
+    });
+
+    test('a 409 WITHOUT Retry-After is a permanent conflict, and is terminal', () {
+      // Six endpoints answer 409; exactly one — idempotency.ts, "still in
+      // progress" — sets Retry-After. The other five are conflicts no retry can
+      // fix: a tag or saved-view name already taken, an email already
+      // registered, a session that is not running. Treating those as retryable
+      // burned all six pending attempts and then dead-lettered them as "we
+      // couldn't confirm this was saved", behind a Retry button that could
+      // never work.
+      expect(
+        classify(kind: OpKind.updateTask, status: 409, hadResponse: true),
+        OpOutcome.terminal,
+      );
+    });
+
+    test('401 pauses', () {
       expect(classify(kind: OpKind.createTask, status: 401, hadResponse: true),
           OpOutcome.authPaused);
     });

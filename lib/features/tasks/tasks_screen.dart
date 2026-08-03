@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/horizons.dart';
 import '../../models/task.dart';
 import '../../providers/filter_provider.dart';
-import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
 import '../../core/offline/queue_flusher.dart';
 import '../../providers/tasks_provider.dart';
@@ -49,7 +48,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
     }
     if (f.listId == 'inbox') return 'Inbox';
     if (f.listId != null) {
-      final lists = ref.watch(listsControllerProvider).value ?? const [];
+      final lists = ref.watch(allListsProvider);
       for (final l in lists) {
         if (l.id == f.listId) return l.name;
       }

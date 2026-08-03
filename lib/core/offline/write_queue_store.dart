@@ -19,7 +19,17 @@ import 'queue_op.dart';
 /// WHY THE CORRUPT FILE IS RENAMED, NOT DELETED. For the read cache a corrupt
 /// entry is a miss and deleting it costs nothing. Here it is the user's typed
 /// work, so it is moved aside where it can still be recovered by hand.
-const int kQueueFormatVersion = 1;
+///
+/// The format version below is bumped whenever an [OpKind] value is added.
+///
+/// Reading forward is safe — a version-1 file loads unchanged. The danger is
+/// backwards: an older build meets `createList`, `QueuedOp.fromJson` returns
+/// null, and the tolerant path meant for ONE corrupt row silently discards the
+/// user's work. A version it does not recognise makes it set the whole file
+/// aside instead, where it is still recoverable.
+///   v1 — task create/update/complete/delete
+///   v2 — list create/delete
+const int kQueueFormatVersion = 2;
 
 class QueueDoc {
   const QueueDoc({

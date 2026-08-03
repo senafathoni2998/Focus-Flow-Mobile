@@ -95,8 +95,8 @@ void main() {
       transport: transport,
       currentUserId: () async => uid,
       onChanged: (QueueDoc _, String? __, FlushState ___) {},
-      onServerTask: serverTasks.add,
-      onDrained: () => drained++,
+      onServerRow: (OpEntity _, Map<String, dynamic> row) => serverTasks.add(row),
+      onDrained: (Set<OpEntity> _) => drained++,
       nowMs: () => now,
     );
   }
@@ -369,8 +369,8 @@ void main() {
         return calls <= 1 ? 'u1' : 'u2';
       },
       onChanged: (QueueDoc _, String? __, FlushState ___) {},
-      onServerTask: (Map<String, dynamic> _) {},
-      onDrained: () {},
+      onServerRow: (OpEntity _, Map<String, dynamic> __) {},
+      onDrained: (Set<OpEntity> _) {},
       nowMs: () => now,
     );
 

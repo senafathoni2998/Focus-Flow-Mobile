@@ -154,6 +154,38 @@ void main() {
     expect(doc.dead.single.errorStatus, 400);
   });
 
+  test('a file from an older format version still loads', () async {
+    // Reading forward must never lose data: v1 held only task ops and every one
+    // of them still parses.
+    store.setScope('u1');
+    await fileFor('u1').writeAsString(jsonEncode(<String, dynamic>{
+      'version': 1,
+      'seq': 1,
+      'ops': <dynamic>[op('op_1', seq: 1, assigns: 'local_a').toJson()],
+      'idMap': <String, String>{},
+      'dead': <dynamic>[],
+    }));
+
+    final QueueDoc doc = await store.load();
+    expect(doc.ops.single.id, 'op_1');
+    expect(store.corruptDetected, isFalse);
+  });
+
+  test('list ops survive the disk round trip', () async {
+    store.setScope('u1');
+    await store.save(QueueDoc(
+      seq: 1,
+      ops: <QueuedOp>[op('op_l', seq: 1, kind: OpKind.createList, assigns: 'local_L')],
+    ));
+
+    final QueueDoc doc = await WriteQueueStore(directory: dir).let((WriteQueueStore s) {
+      s.setScope('u1');
+      return s;
+    }).load();
+    expect(doc.ops.single.kind, OpKind.createList);
+    expect(doc.ops.single.entity, OpEntity.list);
+  });
+
   test('an absent file is an empty queue, not an error', () async {
     store.setScope('u1');
     expect((await store.load()).isEmpty, isTrue);

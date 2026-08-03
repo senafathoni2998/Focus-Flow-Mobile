@@ -7,11 +7,13 @@ import '../../providers/goals_provider.dart';
 import '../../providers/habits_provider.dart';
 import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
+import '../../providers/share_provider.dart';
 import '../../providers/tasks_provider.dart';
 import '../dashboard/dashboard_screen.dart';
 import '../goals/goals_screen.dart';
 import '../habits/habits_screen.dart';
 import '../settings/settings_screen.dart';
+import '../tasks/task_editor_screen.dart';
 import '../tasks/tasks_screen.dart';
 
 class HomeShell extends ConsumerStatefulWidget {
@@ -22,6 +24,10 @@ class HomeShell extends ConsumerStatefulWidget {
 
 class _HomeShellState extends ConsumerState<HomeShell> {
   int _index = 0;
+  /// Guards against opening the editor twice for one share: build() and the
+  /// ref.listen below can both reach _consumePendingShare in the same frame,
+  /// and the pending value is not cleared until the post-frame callback runs.
+  bool _openingShare = false;
 
   static const _screens = [
     TasksScreen(),
@@ -61,8 +67,43 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     }
   }
 
+  /// Open the editor for a share, and only then clear it.
+  ///
+  /// Clearing first would lose the text if the push failed; clearing after means
+  /// the worst case is the editor opening twice, which the user can simply
+  /// cancel. Consumed here rather than in the provider because this is the first
+  /// point at which a Navigator exists AND the user is known to be signed in.
+  void _consumePendingShare() {
+    if (_openingShare) return;
+    final pending = ref.read(pendingSharedTaskProvider);
+    if (pending == null) return;
+    _openingShare = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        _openingShare = false;
+        return;
+      }
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => TaskEditorScreen(
+          presetTitle: pending.title,
+          presetDescription: pending.description,
+        ),
+      ));
+      ref.read(pendingSharedTaskProvider.notifier).state = null;
+      _openingShare = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Fires for a share that arrives while the app is already open...
+    ref.listen(pendingSharedTaskProvider, (_, next) {
+      if (next != null) _consumePendingShare();
+    });
+    // ...and this covers the cold start, where the share was already waiting
+    // before this widget existed.
+    _consumePendingShare();
+
     return Scaffold(
       body: IndexedStack(index: _index, children: _screens),
       bottomNavigationBar: NavigationBar(

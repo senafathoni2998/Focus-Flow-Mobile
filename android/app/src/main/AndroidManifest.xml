@@ -48,6 +48,23 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- Share-to-app: puts FocusFlow in the Android share sheet for text,
+                 so a link or a line from a chat becomes a task without leaving
+                 the app you were in.
+
+                 SEND only, not SEND_MULTIPLE: several shared items would each
+                 need a decision (one task or many? which title?) and guessing
+                 wrong creates junk the user then has to clean up.
+
+                 The activity is launchMode="singleTop", so a share into a
+                 running app arrives at onNewIntent rather than starting a second
+                 copy with its own empty state. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

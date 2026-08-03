@@ -6,6 +6,7 @@ import 'features/auth/login_screen.dart';
 import 'features/shell/home_shell.dart';
 import 'providers/auth_provider.dart';
 import 'providers/reminder_poller.dart';
+import 'providers/share_provider.dart';
 
 class FocusFlowApp extends StatelessWidget {
   const FocusFlowApp({super.key});
@@ -32,6 +33,9 @@ class AuthGate extends ConsumerWidget {
     // Instantiate the reminder poller once, above the screen swap, so it outlives
     // navigation and starts/stops itself with the auth state.
     ref.watch(reminderPollerProvider);
+    // Started above the auth swap so a share that arrives while signed out is
+    // still captured; HomeShell consumes it once there is somewhere to put it.
+    ref.watch(shareListenerProvider);
 
     final status = ref.watch(authControllerProvider).status;
     switch (status) {

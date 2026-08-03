@@ -14,9 +14,19 @@ import '../../widgets/common.dart';
 /// Create or edit a task. Passing [task] switches to edit mode (adds the subtasks
 /// section + a delete action).
 class TaskEditorScreen extends ConsumerStatefulWidget {
-  const TaskEditorScreen({super.key, this.task, this.presetListId});
+  const TaskEditorScreen({
+    super.key,
+    this.task,
+    this.presetListId,
+    this.presetTitle,
+    this.presetDescription,
+  });
   final Task? task;
   final String? presetListId;
+  /// Prefilled when a new task starts from somewhere else — currently the
+  /// Android share sheet. Ignored when editing an existing task.
+  final String? presetTitle;
+  final String? presetDescription;
 
   @override
   ConsumerState<TaskEditorScreen> createState() => _TaskEditorScreenState();
@@ -42,8 +52,8 @@ class _TaskEditorScreenState extends ConsumerState<TaskEditorScreen> {
   void initState() {
     super.initState();
     final t = widget.task;
-    _title = TextEditingController(text: t?.title ?? '');
-    _desc = TextEditingController(text: t?.description ?? '');
+    _title = TextEditingController(text: t?.title ?? widget.presetTitle ?? '');
+    _desc = TextEditingController(text: t?.description ?? widget.presetDescription ?? '');
     _priority = t?.priority ?? 'medium';
     _dueDate = t?.dueDate;
     _listId = t?.listId ?? widget.presetListId;

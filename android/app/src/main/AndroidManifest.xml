@@ -66,6 +66,21 @@
                 <data android:mimeType="text/plain"/>
             </intent-filter>
         </activity>
+        <!-- Home-screen widget. The provider is a BroadcastReceiver belonging to
+             this app, so its code runs in THIS process and can read the snapshot
+             the app writes to SharedPreferences — no token, no network, and no
+             Flutter engine spun up per redraw. -->
+        <receiver
+            android:name=".FocusFlowWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/focusflow_widget_info"/>
+        </receiver>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

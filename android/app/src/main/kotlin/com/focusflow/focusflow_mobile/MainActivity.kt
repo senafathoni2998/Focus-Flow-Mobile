@@ -26,6 +26,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private val channelName = "focusflow/share"
+    private val widgetChannelName = "focusflow/widget"
     private var channel: MethodChannel? = null
 
     /** Text that arrived before Dart was listening. Consumed exactly once. */
@@ -49,6 +50,25 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+
+        // Home-screen widget: Dart hands over a small snapshot, which is written
+        // to SharedPreferences and then rendered by FocusFlowWidgetProvider. The
+        // widget never talks to the network — see that class for why.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, widgetChannelName)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "updateWidget" -> {
+                        val payload = call.arguments as? String
+                        getSharedPreferences(FocusFlowWidgetProvider.PREFS, MODE_PRIVATE)
+                            .edit()
+                            .putString(FocusFlowWidgetProvider.KEY_PAYLOAD, payload)
+                            .apply()
+                        FocusFlowWidgetProvider.refreshAll(applicationContext)
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
 
         // The launch intent exists before Dart starts, so stash it now.
         pendingSharedText = extractSharedText(intent)

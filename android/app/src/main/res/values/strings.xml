@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown in the widget picker. -->
+    <string name="widget_description">What is due today</string>
+</resources>

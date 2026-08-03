@@ -7,6 +7,7 @@ import 'features/shell/home_shell.dart';
 import 'providers/auth_provider.dart';
 import 'providers/reminder_poller.dart';
 import 'providers/share_provider.dart';
+import 'providers/widget_provider.dart';
 
 class FocusFlowApp extends StatelessWidget {
   const FocusFlowApp({super.key});
@@ -36,6 +37,9 @@ class AuthGate extends ConsumerWidget {
     // Started above the auth swap so a share that arrives while signed out is
     // still captured; HomeShell consumes it once there is somewhere to put it.
     ref.watch(shareListenerProvider);
+    // Mirrors the task list to the home-screen widget on the same events the
+    // UI reacts to, so the two can never disagree.
+    ref.watch(widgetSyncProvider);
 
     final status = ref.watch(authControllerProvider).status;
     switch (status) {

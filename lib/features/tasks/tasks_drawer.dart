@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants.dart';
 import '../../core/horizons.dart';
 import '../../core/saved_filter_query.dart';
+import '../chat/chat_screen.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/filter_provider.dart';
 import '../../providers/lists_provider.dart';
@@ -97,6 +98,16 @@ class TasksDrawer extends ConsumerWidget {
               leading: const Icon(Icons.add),
               title: const Text('New list'),
               onTap: () => _createList(context, ref),
+            ),
+            ListTile(
+              leading: const Icon(Icons.auto_awesome_outlined),
+              title: const Text('Assistant'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const ChatScreen()),
+                );
+              },
             ),
             const Divider(),
             _sectionLabel(context, 'Saved views'),

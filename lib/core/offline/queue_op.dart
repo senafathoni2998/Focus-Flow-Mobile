@@ -211,6 +211,9 @@ class QueuedOp {
   bool get carriesKey => key != null;
 
   QueuedOp copyWith({
+    /// Only the flusher sets this, when it assigns the op its FIFO position at
+    /// enqueue. Nothing else may ever renumber an op.
+    int? seq,
     int? attempts,
     int? serverAttempts,
     int? pendingAttempts,
@@ -223,7 +226,7 @@ class QueuedOp {
   }) {
     return QueuedOp(
       id: id,
-      seq: seq,
+      seq: seq ?? this.seq,
       kind: kind,
       target: target,
       assigns: assigns,

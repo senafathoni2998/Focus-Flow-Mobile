@@ -59,8 +59,17 @@ class AuthController extends StateNotifier<AuthState> {
       state = const AuthState(status: AuthStatus.unauthenticated);
       return;
     }
+
+    // Scope the cache from the STORED id, before any network call. On a cold
+    // start with no connection me() fails, and scoping only on its success would
+    // leave the cache unreadable in exactly the situation it exists for.
+    final storedId = await storage.getUserId();
+    if (storedId != null && storedId.isNotEmpty) _scopeCache(storedId);
+
     try {
       final user = await _ref.read(authRepositoryProvider).me();
+      _scopeCache(user.id);
+      await storage.setUserId(user.id);
       state = AuthState(status: AuthStatus.authenticated, user: user);
     } on ApiException catch (e) {
       if (e.isUnauthorized) {
@@ -97,12 +106,22 @@ class AuthController extends StateNotifier<AuthState> {
     _ref.invalidate(taskFilterProvider);
   }
 
+  /// Point the on-disk cache at this user, so one account can never read
+  /// another's cached responses off disk — the same leak resetSession() closes
+  /// in memory.
+  void _scopeCache(String? userId) {
+    _ref.read(responseCacheProvider).setScope(userId);
+    _ref.read(servingCacheProvider.notifier).state = false;
+  }
+
   Future<void> login(String email, String password) async {
     final session = await _ref.read(authRepositoryProvider).login(email, password);
     await _ref
         .read(tokenStorageProvider)
         .saveTokens(access: session.tokens.accessToken, refresh: session.tokens.refreshToken);
+    await _ref.read(tokenStorageProvider).setUserId(session.user.id);
     resetSession();
+    _scopeCache(session.user.id);
     state = AuthState(status: AuthStatus.authenticated, user: session.user);
   }
 
@@ -111,7 +130,9 @@ class AuthController extends StateNotifier<AuthState> {
     await _ref
         .read(tokenStorageProvider)
         .saveTokens(access: session.tokens.accessToken, refresh: session.tokens.refreshToken);
+    await _ref.read(tokenStorageProvider).setUserId(session.user.id);
     resetSession();
+    _scopeCache(session.user.id);
     state = AuthState(status: AuthStatus.authenticated, user: session.user);
   }
 
@@ -123,6 +144,10 @@ class AuthController extends StateNotifier<AuthState> {
     } catch (_) {
       // Best effort — sign out locally regardless.
     }
+    // Wipe the cache BEFORE unscoping: clear() is scope-aware, so dropping the
+    // scope first would leave the files on disk for the next account to inherit.
+    await _ref.read(responseCacheProvider).clear();
+    _scopeCache(null);
     resetSession();
     state = const AuthState(status: AuthStatus.unauthenticated);
   }

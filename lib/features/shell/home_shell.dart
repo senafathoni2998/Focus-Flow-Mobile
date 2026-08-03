@@ -7,6 +7,7 @@ import '../../providers/goals_provider.dart';
 import '../../providers/habits_provider.dart';
 import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
+import '../../providers/providers.dart';
 import '../../providers/share_provider.dart';
 import '../../providers/tasks_provider.dart';
 import '../dashboard/dashboard_screen.dart';
@@ -104,8 +105,39 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     // before this widget existed.
     _consumePendingShare();
 
+    // Showing data read from disk because the server was unreachable. Said out
+    // loud: a screen that looks completely normal while being hours stale is the
+    // worst way for an offline cache to behave.
+    final servingCache = ref.watch(servingCacheProvider);
+
     return Scaffold(
-      body: IndexedStack(index: _index, children: _screens),
+      body: Column(
+        children: [
+          if (servingCache)
+            Material(
+              color: Theme.of(context).colorScheme.secondaryContainer,
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.cloud_off_outlined, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Offline — showing saved data',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          Expanded(child: IndexedStack(index: _index, children: _screens)),
+        ],
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: _onSelect,

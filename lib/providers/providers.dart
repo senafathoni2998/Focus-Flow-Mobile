@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api_client.dart';
 import '../core/config.dart';
+import '../core/response_cache.dart';
 import '../core/token_storage.dart';
 import '../data/analytics_repository.dart';
 import '../data/auth_repository.dart';
@@ -24,6 +25,13 @@ final apiBaseProvider = StateProvider<String>((ref) => AppConfig.fallbackBaseUrl
 
 /// The Dio-backed client. Rebuilds whenever the base URL changes. On a refresh
 /// failure it flips auth to unauthenticated via the auth controller.
+final responseCacheProvider = Provider<ResponseCache>((ref) => ResponseCache());
+
+/// True while the app is showing data read from disk because the server could
+/// not be reached. Surfaced in the UI so "everything looks normal but is hours
+/// old" is never a silent state.
+final servingCacheProvider = StateProvider<bool>((ref) => false);
+
 final apiClientProvider = Provider<ApiClient>((ref) {
   final storage = ref.watch(tokenStorageProvider);
   final base = ref.watch(apiBaseProvider);
@@ -31,6 +39,11 @@ final apiClientProvider = Provider<ApiClient>((ref) {
     storage: storage,
     apiBase: AppConfig(baseUrl: base).apiBase,
     onSessionExpired: () => ref.read(authControllerProvider.notifier).onSessionExpired(),
+    cache: ref.watch(responseCacheProvider),
+    onServingCache: (serving) {
+      final notifier = ref.read(servingCacheProvider.notifier);
+      if (notifier.state != serving) notifier.state = serving;
+    },
   );
 });
 

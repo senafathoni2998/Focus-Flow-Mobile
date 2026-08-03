@@ -11,9 +11,16 @@ class TokenStorage {
   static const _kAccess = 'access_token';
   static const _kRefresh = 'refresh_token';
   static const _kBaseUrl = 'base_url';
+  // Stored alongside the tokens so the offline cache can be scoped to the right
+  // account on a cold start where `me()` cannot be reached. Without it, opening
+  // the app with no network leaves the cache unscoped and therefore unreadable —
+  // the exact case it exists for.
+  static const _kUserId = 'user_id';
 
   Future<String?> getAccessToken() => _storage.read(key: _kAccess);
   Future<String?> getRefreshToken() => _storage.read(key: _kRefresh);
+  Future<String?> getUserId() => _storage.read(key: _kUserId);
+  Future<void> setUserId(String id) => _storage.write(key: _kUserId, value: id);
 
   Future<void> saveTokens({required String access, required String refresh}) async {
     await _storage.write(key: _kAccess, value: access);

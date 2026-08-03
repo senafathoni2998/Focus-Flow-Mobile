@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 
 import 'api_exception.dart';
+import 'response_cache.dart';
 import 'token_storage.dart';
 
 /// Outcome of a token-refresh attempt. `networkError` must NOT sign the user out
@@ -20,6 +23,8 @@ class ApiClient {
     required this.storage,
     required String apiBase,
     this.onSessionExpired,
+    this.cache,
+    this.onServingCache,
   }) {
     final options = BaseOptions(
       baseUrl: apiBase,
@@ -88,6 +93,14 @@ class ApiClient {
 
   final TokenStorage storage;
   final void Function()? onSessionExpired;
+
+  /// Optional read-through cache. When present, successful GETs are stored and
+  /// replayed if the network later fails.
+  final ResponseCache? cache;
+
+  /// Told true when a response came from disk instead of the server, and false
+  /// as soon as a live one succeeds — so the UI can say which it is showing.
+  final void Function(bool servingCache)? onServingCache;
   late final Dio _dio;
   late final Dio _bare;
   /// Single-flight guard: concurrent 401s share one refresh instead of racing.
@@ -165,13 +178,47 @@ class ApiClient {
     );
   }
 
+  /// Cache key: path plus its query, since `/sessions?days=7` and
+  /// `/sessions?days=30` are different resources.
+  String _cacheKey(String path, Map<String, dynamic>? query) {
+    if (query == null || query.isEmpty) return path;
+    // Sorted, so the same query written in a different order is one cache entry.
+    final parts = query.entries.map((e) => '${e.key}=${e.value}').toList()..sort();
+    return '$path?${parts.join('&')}';
+  }
+
   Future<dynamic> getJson(String path, {Map<String, dynamic>? query}) async {
+    final key = _cacheKey(path, query);
     try {
       final r = await _dio.get<dynamic>(path, queryParameters: query);
-      return _requireJson(r.data);
+      final data = _requireJson(r.data);
+      // Only successful, well-formed responses are worth keeping.
+      unawaited(cache?.write(key, data) ?? Future.value());
+      onServingCache?.call(false);
+      return data;
     } on DioException catch (e) {
+      // Fall back to disk ONLY for transport failures. A 4xx is the server
+      // answering — serving stale data over a 401 or a 404 would hide a real
+      // problem behind data that looks fine.
+      if (cache != null && _isTransport(e)) {
+        final cached = await cache!.read(key);
+        if (cached != null) {
+          onServingCache?.call(true);
+          return cached;
+        }
+      }
       throw ApiException.fromDio(e);
     }
+  }
+
+  /// True when the request never got an answer, as opposed to getting a bad one.
+  bool _isTransport(DioException e) {
+    if (e.response != null) return false;
+    return e.type == DioExceptionType.connectionError ||
+        e.type == DioExceptionType.connectionTimeout ||
+        e.type == DioExceptionType.receiveTimeout ||
+        e.type == DioExceptionType.sendTimeout ||
+        e.type == DioExceptionType.unknown;
   }
 
   Future<dynamic> postJson(String path, {Object? body, bool skipAuth = false}) async {

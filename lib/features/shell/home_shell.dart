@@ -8,12 +8,14 @@ import '../../providers/habits_provider.dart';
 import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
 import '../../providers/providers.dart';
+import '../../providers/write_queue_provider.dart';
 import '../../providers/share_provider.dart';
 import '../../providers/tasks_provider.dart';
 import '../dashboard/dashboard_screen.dart';
 import '../goals/goals_screen.dart';
 import '../habits/habits_screen.dart';
 import '../settings/settings_screen.dart';
+import '../settings/unsent_changes_screen.dart';
 import '../tasks/task_editor_screen.dart';
 import '../tasks/tasks_screen.dart';
 
@@ -109,27 +111,57 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     // loud: a screen that looks completely normal while being hours stale is the
     // worst way for an offline cache to behave.
     final servingCache = ref.watch(servingCacheProvider);
+    final unsent = ref.watch(unsentCountProvider);
+    final failed = ref.watch(failedCountProvider);
+    // Stale reads and unsent writes are different problems and get different
+    // wording. Showing only the read banner while writes pile up unsent would be
+    // the more dangerous silence of the two.
+    final showBanner = servingCache || unsent > 0;
+    final bannerText = failed > 0
+        ? "$failed change${failed == 1 ? '' : 's'} couldn't be saved"
+        : unsent > 0
+            ? (servingCache
+                ? 'Offline — $unsent change${unsent == 1 ? '' : 's'} waiting'
+                : 'Sending $unsent change${unsent == 1 ? '' : 's'}…')
+            : 'Offline — showing saved data';
 
     return Scaffold(
       body: Column(
         children: [
-          if (servingCache)
+          if (showBanner)
             Material(
-              color: Theme.of(context).colorScheme.secondaryContainer,
+              color: failed > 0
+                  ? Theme.of(context).colorScheme.errorContainer
+                  : Theme.of(context).colorScheme.secondaryContainer,
               child: SafeArea(
                 bottom: false,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   child: Row(
                     children: [
-                      const Icon(Icons.cloud_off_outlined, size: 16),
+                      Icon(
+                        failed > 0
+                            ? Icons.error_outline
+                            : (unsent > 0
+                                ? Icons.cloud_upload_outlined
+                                : Icons.cloud_off_outlined),
+                        size: 16,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Offline — showing saved data',
+                          bannerText,
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ),
+                      if (unsent > 0)
+                        TextButton(
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                                builder: (_) => const UnsentChangesScreen()),
+                          ),
+                          child: const Text('View'),
+                        ),
                     ],
                   ),
                 ),

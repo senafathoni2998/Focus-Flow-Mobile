@@ -93,7 +93,8 @@ class QueueFlusher {
     required WriteQueueStore store,
     required QueueTransport transport,
     required Future<String?> Function() currentUserId,
-    required void Function(QueueDoc doc, String? inFlightOpId) onChanged,
+    required void Function(QueueDoc doc, String? inFlightOpId, FlushState state)
+        onChanged,
     required void Function(Map<String, dynamic> taskJson) onServerTask,
     required void Function() onDrained,
     int Function() nowMs = _realNow,
@@ -108,7 +109,8 @@ class QueueFlusher {
   final WriteQueueStore _store;
   final QueueTransport _transport;
   final Future<String?> Function() _currentUserId;
-  final void Function(QueueDoc doc, String? inFlightOpId) _onChanged;
+  final void Function(QueueDoc doc, String? inFlightOpId, FlushState state)
+      _onChanged;
   final void Function(Map<String, dynamic> taskJson) _onServerTask;
   final void Function() _onDrained;
   final int Function() _nowMs;
@@ -195,7 +197,8 @@ class QueueFlusher {
   /// 400 still throws out of `TasksController` and surfaces inline in the editor,
   /// and never becomes a dead letter. Only writes that were genuinely deferred
   /// can end up in "Unsent changes".
-  Future<SubmitOutcome> submit(QueuedOp op) async {
+  Future<({SubmitOutcome outcome, Map<String, dynamic>? response})> submit(
+      QueuedOp op) async {
     if (_store.scope == null) {
       // Not scoped (signed out, or a store that never loaded). Queueing here
       // would write nothing and silently swallow the user's work, so this
@@ -206,7 +209,7 @@ class QueueFlusher {
       if (classify(kind: op.kind, status: res.status, hadResponse: res.hadResponse) ==
           OpOutcome.succeeded) {
         _emitServerTask(res);
-        return SubmitOutcome.sent;
+        return (outcome: SubmitOutcome.sent, response: res.body);
       }
       throw ApiException(
         res.message ?? 'Could not save this change.',
@@ -230,7 +233,7 @@ class QueueFlusher {
           cancelCreateThenDelete(ops, staged.target);
       if (collapsed != null) {
         await _commit(_doc.copyWith(seq: seq, ops: collapsed));
-        return SubmitOutcome.sent;
+        return (outcome: SubmitOutcome.sent, response: null);
       }
     }
 
@@ -238,31 +241,34 @@ class QueueFlusher {
 
     if (hadWork || _pausedAuth) {
       kick();
-      return SubmitOutcome.deferred;
+      return (outcome: SubmitOutcome.deferred, response: null);
     }
     return _submitInline(staged.id);
   }
 
-  Future<SubmitOutcome> _submitInline(String opId) async {
+  Future<({SubmitOutcome outcome, Map<String, dynamic>? response})> _submitInline(
+      String opId) async {
     if (_flushing) {
       _rerun = true;
-      return SubmitOutcome.deferred;
+      return (outcome: SubmitOutcome.deferred, response: null);
     }
     _flushing = true;
     try {
       if (_doc.ops.isEmpty || _doc.ops.first.id != opId) {
         _rerun = true;
-        return SubmitOutcome.deferred;
+        return (outcome: SubmitOutcome.deferred, response: null);
       }
       final String? uid = await _currentUserId();
-      if (uid == null || uid != _store.scope) return SubmitOutcome.deferred;
+      if (uid == null || uid != _store.scope) {
+        return (outcome: SubmitOutcome.deferred, response: null);
+      }
 
       final QueuedOp head = _doc.ops.first;
       final Resolution r = resolve(head, _doc.idMap);
       if (!r.isReady) {
         await _dieHead(DeadReason.orphaned,
             message: 'the task it belongs to was never created');
-        return SubmitOutcome.deferred;
+        return (outcome: SubmitOutcome.deferred, response: null);
       }
 
       _inFlightOpId = head.id;
@@ -279,7 +285,7 @@ class QueueFlusher {
           await _succeedHead(res, r.op!);
           _state = FlushState.idle;
           if (_doc.ops.isEmpty) _onDrained();
-          return SubmitOutcome.sent;
+          return (outcome: SubmitOutcome.sent, response: res.body);
 
         case OpOutcome.terminal:
           // Remove it WITHOUT dead-lettering. The user is looking at the editor
@@ -294,17 +300,17 @@ class QueueFlusher {
 
         case OpOutcome.authPaused:
           pauseForAuth();
-          return SubmitOutcome.deferred;
+          return (outcome: SubmitOutcome.deferred, response: null);
 
         case OpOutcome.retryTransport:
           await _deferHeadForNetwork();
-          return SubmitOutcome.deferred;
+          return (outcome: SubmitOutcome.deferred, response: null);
 
         case OpOutcome.retryServer:
         case OpOutcome.retryPending:
           await _penaliseHead(outcome, res);
           _armForHead();
-          return SubmitOutcome.deferred;
+          return (outcome: SubmitOutcome.deferred, response: null);
       }
     } finally {
       _inFlightOpId = null;
@@ -672,7 +678,7 @@ class QueueFlusher {
     _emit();
   }
 
-  void _emit() => _onChanged(_doc, _inFlightOpId);
+  void _emit() => _onChanged(_doc, _inFlightOpId, _state);
 
   void _arm(Duration d) {
     if (_disposed) return;

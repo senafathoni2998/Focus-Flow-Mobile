@@ -8,6 +8,7 @@ import '../../providers/filter_provider.dart';
 import '../../providers/goals_provider.dart';
 import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
+import '../../core/offline/queue_flusher.dart';
 import '../../providers/tasks_provider.dart';
 import '../../widgets/common.dart';
 
@@ -113,8 +114,9 @@ class _TaskEditorScreenState extends ConsumerState<TaskEditorScreen> {
     setState(() => _saving = true);
     final ctrl = ref.read(tasksControllerProvider.notifier);
     try {
+      final SubmitOutcome outcome;
       if (_isEdit) {
-        await ctrl.update(widget.task!.id, {
+        outcome = await ctrl.update(widget.task!.id, {
           'title': title,
           'description': _desc.text.trim().isEmpty ? null : _desc.text.trim(),
           'priority': _priority,
@@ -126,7 +128,7 @@ class _TaskEditorScreenState extends ConsumerState<TaskEditorScreen> {
           'recurrence': _recurrence,
         });
       } else {
-        await ctrl.create({
+        outcome = await ctrl.create({
           'title': title,
           if (_desc.text.trim().isNotEmpty) 'description': _desc.text.trim(),
           'priority': _priority,
@@ -138,7 +140,12 @@ class _TaskEditorScreenState extends ConsumerState<TaskEditorScreen> {
           if (_recurrence != null) 'recurrence': _recurrence,
         });
       }
-      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        // Said out loud rather than implied: the editor closing normally would
+        // otherwise read as "saved on the server", which it is not yet.
+        if (outcome == SubmitOutcome.deferred) showOfflineSaved(context);
+        Navigator.of(context).pop();
+      }
     } catch (e) {
       if (mounted) showError(context, e);
     } finally {
@@ -364,11 +371,12 @@ class _SubtasksSectionState extends ConsumerState<_SubtasksSection> {
     if (title.isEmpty) return;
     setState(() => _busy = true);
     try {
-      await ref.read(tasksControllerProvider.notifier).create({
+      final outcome = await ref.read(tasksControllerProvider.notifier).create({
         'title': title,
         'parentTaskId': widget.parent.id,
         if (widget.parent.listId != null) 'listId': widget.parent.listId,
       });
+      if (outcome == SubmitOutcome.deferred && mounted) showOfflineSaved(context);
       _input.clear();
     } catch (e) {
       if (mounted) showError(context, e);

@@ -89,12 +89,14 @@ if you want deep links / widget shortcuts.
 `value:` compiles on essentially every Flutter version; `initialValue:` only exists on
 very recent SDKs. A deprecation warning at worst.
 
-**F4. Online-first (no offline cache / sync).** ⚠️❓
-The app reads/writes live; there's optimistic UI for mutations but **no local database
-or offline queue**. *Recommendation:* defer offline-first unless you specifically need
-to work with no signal — it's a real design layer (local SQLite/Drift + sync +
-`updatedAt`/soft-delete on the API) and the same cost regardless of backend. **❓ Tell me
-if offline matters and I'll design it.**
+**F4. Offline-capable, at the HTTP boundary — no local database.** ✅
+Superseded the original "online-first" position in two steps: successful GETs are cached
+to disk and replayed when the network fails, and the four task WRITES are queued
+durably and replayed with idempotency keys. Neither step added SQLite. The app holds
+everything in memory and filters in Dart, so a local database would have bought a query
+capability nothing uses, in exchange for a schema, on-device migrations and (for Drift)
+the codegen F1 rules out. Caching one layer lower covers every endpoint at once; queueing
+one layer lower covers every write the same way. See F7 for exactly what is queued.
 
 **F5. Cross-entity freshness is refresh-based, not reactive.** ✅
 Completing a task doesn't instantly re-derive a linked goal's percent in the UI; data
@@ -106,6 +108,41 @@ more coupling/flicker. Easy to add if you want it.
 Fine for sideloading. **❓ Change the package id before any Play Store upload.**
 
 ---
+
+**F7. The offline write queue covers FOUR task operations, and nothing else — on purpose.** ✅
+Create, edit, complete and delete a task are queued; every other write stays online-only.
+This list is a set of decisions, not a to-do list. Read the reason before "finishing" it:
+
+| Operation | Verdict | Why |
+|---|---|---|
+| `POST /tasks` | **queued** | The only write carrying content the user cannot reconstruct. Idempotency-wrapped, and the key is mandatory: creating a row is the one inherently non-idempotent act. |
+| `PATCH /tasks/:id` | **queued** | No idempotency support and none needed. Every field is an absolute assignment, tags and reminders are full replacements, and `completedAt` is `existing ?? now` — replaying the same body converges. |
+| `POST /tasks/:id/complete` | **queued** | Key MANDATORY. For a recurring task the server rolls the row forward and increments `completedCount`, so a bare retry skips an occurrence the user never did. |
+| `DELETE /tasks/:id` | **queued** | No key needed: the queue treats 404 as success. Ids are server cuids and never reused, so a 404 can only mean "already deleted". |
+| `POST /tasks/reorder` | online-only | `newOrder` is an absolute position computed against a list the queue is about to change (`createTask` assigns `max(order)+10` server-side, invisible offline). It also has no caller anywhere in `lib/`, so refusing costs zero UX. |
+| `POST /habits/:id/checkin`, `POST /goals/:id/progress` | online-only | The WIRE is safe — both are key-wrapped. The **UI** is not: neither has a local projection, so offline the tile does not move, the user taps again, and that is two ops with two DIFFERENT keys. An idempotency key defends against retry duplication, never against duplicate intent our own UI manufactured. Queue these only once habits and goals render a pending delta. |
+| Create/edit/delete list, goal, habit, tag, saved filter | online-only (phase 2) | A blast-radius objection, not a contract one. Each opens a second local-id namespace with cross-entity references (`task.listId` pointing at a local list id). Additive later: add the key to `kIdBearingBodyKeys` and give the entity an overlay. |
+| `POST /sessions` and friends | online-only, **blocked on the server** | `startSchema` has no `startTime` and `startSession` stamps `new Date()`. A flight's pomodoros would all land at the instant the wifi connected, putting hours of focus time on the wrong day in every analytics chart. Unblocking is a one-line server change (accept an optional client `startTime`, clamped to `<= now`). |
+| `POST /chat` | online-only | The response IS the request's purpose. |
+| `POST /reminders/dispatch` | online-only | A server-side "I showed this" marker whose read half needs the network anyway. |
+| Anything under `/auth` | **never** | Hard rule: nothing carrying credentials is written to the queue file, which is plaintext in the documents directory. |
+
+Supporting rules, each preventing something specific:
+
+- **A persisted op body is never rewritten.** Local ids are substituted at dispatch into a
+  throwaway request. The server 422s a key reused with a different body hash, and throws it
+  *before* the handler runs so the key is never released — a wedged write with no recovery.
+  Never mutating what we stored makes that unreachable rather than unlikely.
+- **Transport failures consume no retry budget**, only a widening delay. A fortnight at sea
+  must not dead-letter a valid task. 5xx and 409 have separate bounded budgets; 409's exists
+  because `idempotency.ts` has no TTL and never releases a key stranded in `pending`.
+- **A fresh idempotency key is minted on 422 only.** For 400/403/404 the server already
+  released the key, so reuse is legal and keeps the lost-response protection.
+- **Nothing is ever auto-discarded.** Failures land in Settings → Unsent changes with the
+  server's own message and a "Copy text" action, so a typed task is never silently lost.
+- **Signing out RETAINS the queue** unless the user explicitly chooses to discard it. It is
+  their own unsent work, not the server's cached data, and the two must not share a policy.
+  The file stays scoped, and the flusher re-checks the signed-in user before every request.
 
 ## Not in this version (scoped out; all are additive later)
 

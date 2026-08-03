@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../core/horizons.dart';
 import '../models/task.dart';
+import '../core/offline/task_overlay.dart';
 import 'tasks_provider.dart';
+import 'write_queue_provider.dart';
 
 /// The current task-workspace selection: which smart list / list / tag, plus
 /// search, sort, and whether completed tasks are shown.
@@ -54,9 +56,25 @@ int _cmpNullableDate(DateTime? a, DateTime? b) {
   return a.compareTo(b);
 }
 
+/// Server truth with every pending write folded on top. EVERY task reader
+/// watches this, never `tasksControllerProvider` directly.
+///
+/// Dead ops are folded in too. Without that, a task the user typed offline whose
+/// create the server then rejected would vanish from the list the instant it was
+/// dead-lettered — they would watch their own typing disappear with no
+/// explanation. It stays, badged, until they decide what to do with it.
+final allTasksProvider = Provider<List<Task>>((ref) {
+  final server = ref.watch(tasksControllerProvider).value ?? const <Task>[];
+  final pending = ref.watch(pendingOpsProvider);
+  final dead = ref.watch(deadOpsProvider);
+  final idMap = ref.watch(queueIdMapProvider);
+  if (pending.isEmpty && dead.isEmpty) return server;
+  return applyQueue(server, [...pending, ...dead], idMap);
+});
+
 /// The filtered + sorted top-level tasks for the current selection.
 final visibleTasksProvider = Provider<List<Task>>((ref) {
-  final all = ref.watch(tasksControllerProvider).value ?? const [];
+  final all = ref.watch(allTasksProvider);
   final f = ref.watch(taskFilterProvider);
   final now = DateTime.now();
 
@@ -110,7 +128,7 @@ final visibleTasksProvider = Provider<List<Task>>((ref) {
 
 /// Subtasks grouped by their parent id (for progress badges + the editor).
 final subtasksByParentProvider = Provider<Map<String, List<Task>>>((ref) {
-  final all = ref.watch(tasksControllerProvider).value ?? const [];
+  final all = ref.watch(allTasksProvider);
   final map = <String, List<Task>>{};
   for (final t in all) {
     final p = t.parentTaskId;
@@ -121,7 +139,7 @@ final subtasksByParentProvider = Provider<Map<String, List<Task>>>((ref) {
 
 /// Open-task counts per smart-list horizon, for the drawer badges.
 final horizonCountsProvider = Provider<Map<String, int>>((ref) {
-  final all = ref.watch(tasksControllerProvider).value ?? const [];
+  final all = ref.watch(allTasksProvider);
   final now = DateTime.now();
   final open = all.where((t) => t.parentTaskId == null && !t.isTerminal).toList();
   final counts = <String, int>{};

@@ -16,6 +16,7 @@ import '../data/session_repository.dart';
 import '../data/tag_repository.dart';
 import '../data/task_repository.dart';
 import 'auth_provider.dart';
+import 'write_queue_provider.dart';
 
 /// Secure on-device storage for tokens + the base-URL override.
 final tokenStorageProvider = Provider<TokenStorage>((ref) => TokenStorage());
@@ -33,7 +34,10 @@ final responseCacheProvider = Provider<ResponseCache>((ref) => ResponseCache());
 /// old" is never a silent state.
 final servingCacheProvider = StateProvider<bool>((ref) => false);
 
-final apiClientProvider = Provider<ApiClient>((ref) {
+// The variable type is written out because `onNetworkOk` reads the flusher,
+// which reads this provider — a cycle for Dart's TYPE INFERENCE, though not at
+// runtime: the read happens inside the callback, long after both are built.
+final Provider<ApiClient> apiClientProvider = Provider<ApiClient>((ref) {
   final storage = ref.watch(tokenStorageProvider);
   final base = ref.watch(apiBaseProvider);
   return ApiClient(
@@ -45,6 +49,10 @@ final apiClientProvider = Provider<ApiClient>((ref) {
       final notifier = ref.read(servingCacheProvider.notifier);
       if (notifier.state != serving) notifier.state = serving;
     },
+    // Any 2xx from any verb means there is a network again. Read lazily inside
+    // the callback, not captured: the flusher depends on this client, so
+    // resolving it here would be a provider cycle.
+    onNetworkOk: () => ref.read(queueFlusherProvider).kick(),
   );
 });
 

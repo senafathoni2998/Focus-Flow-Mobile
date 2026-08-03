@@ -94,7 +94,7 @@ void main() {
       store: store,
       transport: transport,
       currentUserId: () async => uid,
-      onChanged: (QueueDoc _, String? __) {},
+      onChanged: (QueueDoc _, String? __, FlushState ___) {},
       onServerTask: serverTasks.add,
       onDrained: () => drained++,
       nowMs: () => now,
@@ -134,7 +134,8 @@ void main() {
     // The request left the socket, the answer never came back. Retrying without
     // a stable key is how you get two identical tasks.
     flusher = build(<TransportResult>[offline(), ok()]);
-    final SubmitOutcome first = await flusher.submit(mkOp('a', assigns: 'local_a'));
+    final SubmitOutcome first =
+        (await flusher.submit(mkOp('a', assigns: 'local_a'))).outcome;
     expect(first, SubmitOutcome.deferred);
     expect(flusher.pendingCount, 1);
 
@@ -367,7 +368,7 @@ void main() {
         calls++;
         return calls <= 1 ? 'u1' : 'u2';
       },
-      onChanged: (QueueDoc _, String? __) {},
+      onChanged: (QueueDoc _, String? __, FlushState ___) {},
       onServerTask: (Map<String, dynamic> _) {},
       onDrained: () {},
       nowMs: () => now,
@@ -407,7 +408,8 @@ void main() {
   group('submit', () {
     test('returns sent on an immediate success', () async {
       flusher = build(<TransportResult>[ok()]);
-      expect(await flusher.submit(mkOp('a', assigns: 'local_a')), SubmitOutcome.sent);
+      expect((await flusher.submit(mkOp('a', assigns: 'local_a'))).outcome,
+          SubmitOutcome.sent);
       expect(serverTasks.single['id'], 'srv1');
     });
 
@@ -427,7 +429,7 @@ void main() {
 
     test('returns deferred and keeps the op when there is no network', () async {
       flusher = build(<TransportResult>[offline()]);
-      expect(await flusher.submit(mkOp('a', assigns: 'local_a')),
+      expect((await flusher.submit(mkOp('a', assigns: 'local_a'))).outcome,
           SubmitOutcome.deferred);
       expect(flusher.pendingCount, 1);
     });
@@ -437,7 +439,7 @@ void main() {
       await flusher.submit(mkOp('a', assigns: 'local_a'));
       expect(transport.sent.length, 1);
 
-      expect(await flusher.submit(mkOp('b', assigns: 'local_b')),
+      expect((await flusher.submit(mkOp('b', assigns: 'local_b'))).outcome,
           SubmitOutcome.deferred);
       await pump();
       // Strict FIFO: b cannot jump ahead of a, and a is in backoff.

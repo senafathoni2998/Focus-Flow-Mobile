@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
 import '../../core/date_format.dart';
+import '../../core/offline/task_overlay.dart';
 import '../../models/task.dart';
 
 /// A single task row: completion toggle, title, and metadata (due date, priority,
@@ -14,9 +15,14 @@ class TaskCard extends StatelessWidget {
     required this.onTap,
     this.subtaskDone = 0,
     this.subtaskTotal = 0,
+    this.pending,
   });
 
   final Task task;
+
+  /// Set when this row has an unsent write behind it. Null for the normal case.
+  final PendingState? pending;
+
   final VoidCallback onToggle;
   final VoidCallback onTap;
   final int subtaskDone;
@@ -61,6 +67,25 @@ class TaskCard extends StatelessWidget {
                           Padding(
                             padding: const EdgeInsets.only(right: 6, top: 2),
                             child: Icon(Icons.flag, size: 14, color: priorityColor(task.priority)),
+                          ),
+                        // Before the title, so a row that has not reached the
+                        // server is never mistaken for one that has. Failed is
+                        // amber and the row STAYS — a task the user typed must
+                        // not vanish because the server refused it.
+                        if (pending != null)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6, top: 2),
+                            child: Icon(
+                              switch (pending!) {
+                                PendingState.queued => Icons.cloud_queue,
+                                PendingState.sending => Icons.cloud_sync,
+                                PendingState.failed => Icons.error_outline,
+                              },
+                              size: 14,
+                              color: pending == PendingState.failed
+                                  ? scheme.error
+                                  : scheme.outline,
+                            ),
                           ),
                         Expanded(
                           child: Text(

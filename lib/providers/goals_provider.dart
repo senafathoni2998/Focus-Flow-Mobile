@@ -21,19 +21,31 @@ class GoalsController extends StateNotifier<AsyncValue<List<Goal>>> {
     try {
       state = AsyncValue.data(await _repo.list());
     } catch (e, st) {
-      state = AsyncValue.error(e, st);
+      // Keep the cached list alongside the error. Replacing it outright collapsed
+      // the collection to [], so a mutation whose follow-up refresh failed (a POST
+      // that succeeded, then a Wi-Fi -> LTE handover) blanked the whole screen and
+      // read as "save failed" — inviting a duplicate.
+      state = state.hasValue
+          ? AsyncValue<List<Goal>>.error(e, st).copyWithPrevious(state)
+          : AsyncValue.error(e, st);
     }
+  }
+
+  /// Like [refresh] but RETHROWS, so a mutation's caller can surface the failure
+  /// instead of it being swallowed into the state and the mutation looking fine.
+  Future<void> reload() async {
+    state = AsyncValue.data(await _repo.list());
   }
 
   // Progress + status are server-derived, so re-fetch to reflect them accurately.
   Future<void> create(Map<String, dynamic> body) async {
     await _repo.create(body);
-    await refresh();
+    await reload();
   }
 
   Future<void> update(String id, Map<String, dynamic> body) async {
     await _repo.update(id, body);
-    await refresh();
+    await reload();
   }
 
   Future<void> delete(String id) async {
@@ -44,12 +56,12 @@ class GoalsController extends StateNotifier<AsyncValue<List<Goal>>> {
 
   Future<void> adjustProgress(String id, num delta) async {
     await _repo.adjustProgress(id, delta);
-    await refresh();
+    await reload();
   }
 
   Future<void> setStatus(String id, String status) async {
     await _repo.setStatus(id, status);
-    await refresh();
+    await reload();
   }
 }
 

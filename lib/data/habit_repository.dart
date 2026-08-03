@@ -11,6 +11,12 @@ class HabitRepository {
     return asMapList(asMap(data)['habits']).map(Habit.fromJson).toList();
   }
 
+  /// Archived habits, for the "show archived" view. Mirrors GoalRepository.archived().
+  Future<List<Habit>> archived() async {
+    final data = await _api.getJson('/habits/archived');
+    return asMapList(asMap(data)['habits']).map(Habit.fromJson).toList();
+  }
+
   Future<Habit> create(Map<String, dynamic> body) async {
     final data = await _api.postJson('/habits', body: body);
     return Habit.fromJson(asMap(asMap(data)['habit']));

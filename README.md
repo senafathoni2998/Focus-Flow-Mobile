@@ -6,10 +6,10 @@ database and domain logic that powers the web app. Tasks (with smart-list date
 horizons, subtasks, tags, reminders, recurrence), habits, goals, a dashboard, and
 settings.
 
-> This repo contains **only the app source** (`lib/`, `pubspec.yaml`, …). The Android
-> host project (`android/`) is generated on your machine with `flutter create` — see
-> **Setup** below. Flutter was not installed in the environment that authored this, so
-> run `flutter analyze` once after setup and fix any SDK-version nits it reports.
+> The Android host project (`android/`) **is committed**, with the permissions and
+> backup settings the app needs already applied. Do not regenerate it with
+> `flutter create` unless you intend to redo those — see **Android host project**
+> below for what was customised and why.
 
 ---
 
@@ -27,42 +27,41 @@ settings.
 
 ## Setup
 
-Because only the Dart source is committed, generate the platform folders first, then
-restore this repo's source (which `flutter create` would otherwise overwrite):
+The platform folders are committed, so there is nothing to generate:
 
 ```bash
 cd Focus_Flow_Mobile
-
-# 1) Generate android/ (and other platform scaffolding) IN PLACE.
-#    This may overwrite pubspec.yaml / lib/main.dart with defaults — that's expected.
-flutter create --org com.focusflow --project-name focusflow_mobile --platforms=android .
-
-# 2) Restore this project's real source over the generated defaults.
-#    (Safe: everything here is committed to git.)
-git checkout -- pubspec.yaml lib/ analysis_options.yaml
-
-# 3) Fetch packages and sanity-check.
 flutter pub get
-flutter analyze
+flutter analyze     # expect only DropdownButtonFormField deprecation infos
+flutter test
+flutter run
 ```
 
-### Enable network access — **REQUIRED**
+## Android host project
 
-The app makes HTTP calls to your backend, so after `flutter create` edit
-`android/app/src/main/AndroidManifest.xml`:
+`android/` is version-controlled rather than generated, because the app depends on
+manifest changes that `flutter create` does not produce and would silently discard:
 
-1. Add the INTERNET permission just inside `<manifest …>` (above `<application>`):
-   ```xml
-   <uses-permission android:name="android.permission.INTERNET"/>
-   ```
-2. Allow cleartext HTTP **for local dev** (the dev backend is `http://`, not `https://`) —
-   add this attribute to the `<application …>` tag:
-   ```xml
-   android:usesCleartextTraffic="true"
-   ```
-   > Omit this if you serve the backend over HTTPS.
+| Setting | Why |
+| --- | --- |
+| `INTERNET` | Every screen calls your backend. Without it the app builds and then fails every request with a connection error. |
+| `POST_NOTIFICATIONS` | Android 13+ needs this declared before the runtime prompt can appear. Without it due reminders stay silent with no visible cause. |
+| `usesCleartextTraffic="true"` | The dev backend is plain `http://` on a LAN address. **Remove it once you terminate TLS** — as written it permits cleartext to any host, so on a shared network bearer tokens travel in the clear. |
+| `allowBackup="false"` | Tokens live in `flutter_secure_storage`, which is Keystore-backed and therefore device-bound. Android auto-backup would copy the encrypted blobs to a new device where the key does not exist, and that decryption failure is what used to pin the app on its splash screen forever. |
 
-Without both, every request fails on a real build with a connection error.
+If you ever do re-run `flutter create .`, restore the tracked files afterwards with
+`git checkout -- $(git diff --name-only)` and re-check the table above.
+
+### Reminder notifications
+
+The app raises a device notification when a task's reminder time arrives. The
+permission is already declared (see the table above); Android asks for the grant
+on first launch. Decline it and everything else keeps working — only reminders go
+silent.
+
+> **Foreground only.** Reminders fire while the app is running, mirroring the web
+> app's in-app dispatcher. Waking a closed app needs a push transport (FCM) and a
+> backend that can reach Google, which a self-hosted deployment may not want.
 
 ## Point the app at your backend
 

@@ -54,7 +54,14 @@ class DashboardScreen extends ConsumerWidget {
                 ],
               ),
               const SizedBox(height: 16),
-              _ProgressBanner(done: d.completedThisWeek, total: d.total),
+              // Denominator is this week's completions plus the work still open —
+              // NOT `d.total`, which counts every task ever created, so the bar
+              // shrank forever as the archive grew and a productive week read as
+              // almost no progress. byStatus was already in the payload.
+              _ProgressBanner(
+                done: d.completedThisWeek,
+                total: d.completedThisWeek + d.openTasks,
+              ),
             ],
           ),
         ),
@@ -125,7 +132,9 @@ class _ProgressBanner extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          Text('$done completed this week',
+          // Show the denominator: a bare "12 completed this week" gave no way to
+          // tell whether the bar was reading a good week or a bad one.
+          Text('$done of $total done this week',
               style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
         ],
       ),

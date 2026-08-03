@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 
 import 'api_exception.dart';
+import 'response_cache.dart';
 import 'token_storage.dart';
 
 /// Outcome of a token-refresh attempt. `networkError` must NOT sign the user out
@@ -20,16 +23,29 @@ class ApiClient {
     required this.storage,
     required String apiBase,
     this.onSessionExpired,
+    this.cache,
+    this.onServingCache,
   }) {
-    _dio = Dio(
-      BaseOptions(
-        baseUrl: apiBase,
-        connectTimeout: const Duration(seconds: 15),
-        receiveTimeout: const Duration(seconds: 20),
-        headers: {'Content-Type': 'application/json'},
-        // We interpret non-2xx ourselves via DioException.
-      ),
+    final options = BaseOptions(
+      baseUrl: apiBase,
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 20),
+      headers: {'Content-Type': 'application/json'},
+      // We interpret non-2xx ourselves via DioException.
     );
+    _dio = Dio(options);
+
+    // A SECOND Dio with NO interceptors, used for the refresh call and for
+    // replaying a request after a refresh.
+    //
+    // Both of those happen from inside the QueuedInterceptorsWrapper's onError
+    // handler, which holds the error queue while it awaits. Issuing them on `_dio`
+    // sent their own failures back into that same blocked queue, so any refresh
+    // that returned non-2xx (expired refresh token, rotated NEXTAUTH_SECRET)
+    // deadlocked: the request never completed, the `authFailed` branch below was
+    // never reached, clearTokens() never ran, and the app sat on its splash
+    // spinner forever with Clear app data as the only way out.
+    _bare = Dio(options);
 
     // QueuedInterceptors process one handler at a time, so a burst of parallel
     // 401s triggers a single refresh rather than a stampede.
@@ -77,7 +93,18 @@ class ApiClient {
 
   final TokenStorage storage;
   final void Function()? onSessionExpired;
+
+  /// Optional read-through cache. When present, successful GETs are stored and
+  /// replayed if the network later fails.
+  final ResponseCache? cache;
+
+  /// Told true when a response came from disk instead of the server, and false
+  /// as soon as a live one succeeds — so the UI can say which it is showing.
+  final void Function(bool servingCache)? onServingCache;
   late final Dio _dio;
+  late final Dio _bare;
+  /// Single-flight guard: concurrent 401s share one refresh instead of racing.
+  Future<_RefreshOutcome>? _inFlightRefresh;
 
   /// Retry a request with a (possibly refreshed) token, marking it so it won't
   /// loop back into the refresh branch.
@@ -91,17 +118,28 @@ class ApiClient {
       req.headers['Authorization'] = 'Bearer $token';
     }
     try {
-      handler.resolve(await _dio.fetch<dynamic>(req));
+      // `_bare`, not `_dio`: we are inside the error queue, and a replay that
+      // fails on `_dio` would re-enter that blocked queue and hang. The header is
+      // set explicitly above, so the absent onRequest interceptor costs nothing.
+      handler.resolve(await _bare.fetch<dynamic>(req));
     } on DioException catch (err) {
       handler.next(err);
     }
   }
 
-  Future<_RefreshOutcome> _tryRefresh() async {
+  Future<_RefreshOutcome> _tryRefresh() {
+    // Collapse concurrent callers onto one in-flight refresh.
+    return _inFlightRefresh ??= _refreshOnce().whenComplete(() {
+      _inFlightRefresh = null;
+    });
+  }
+
+  Future<_RefreshOutcome> _refreshOnce() async {
     final refresh = await storage.getRefreshToken();
     if (refresh == null || refresh.isEmpty) return _RefreshOutcome.authFailed;
     try {
-      final r = await _dio.post<dynamic>(
+      // `_bare` so a non-2xx refresh cannot deadlock the error queue we are in.
+      final r = await _bare.post<dynamic>(
         '/auth/refresh',
         data: {'refreshToken': refresh},
         options: Options(extra: {'skipAuth': true}),
@@ -125,13 +163,62 @@ class ApiClient {
 
   // ---- JSON helpers -----------------------------------------------------------
 
+  /// Reject a 2xx whose body is not JSON.
+  ///
+  /// Dio only decodes when the content-type says JSON, so a misconfigured reverse
+  /// proxy answering `/api/v1/tasks` with the Next.js HTML page came back as a
+  /// 200 carrying a String. That fell through `asMap` -> `{}` -> `asMapList` ->
+  /// `[]`, and every list screen rendered its "nothing here" empty state with no
+  /// error and no retry — indistinguishable from genuinely having no data.
+  dynamic _requireJson(dynamic data) {
+    if (data == null || data is Map || data is List) return data;
+    throw ApiException(
+      'The server returned an unexpected (non-JSON) response. Check the server '
+      'URL in Settings — it should point at the FocusFlow backend root.',
+    );
+  }
+
+  /// Cache key: path plus its query, since `/sessions?days=7` and
+  /// `/sessions?days=30` are different resources.
+  String _cacheKey(String path, Map<String, dynamic>? query) {
+    if (query == null || query.isEmpty) return path;
+    // Sorted, so the same query written in a different order is one cache entry.
+    final parts = query.entries.map((e) => '${e.key}=${e.value}').toList()..sort();
+    return '$path?${parts.join('&')}';
+  }
+
   Future<dynamic> getJson(String path, {Map<String, dynamic>? query}) async {
+    final key = _cacheKey(path, query);
     try {
       final r = await _dio.get<dynamic>(path, queryParameters: query);
-      return r.data;
+      final data = _requireJson(r.data);
+      // Only successful, well-formed responses are worth keeping.
+      unawaited(cache?.write(key, data) ?? Future.value());
+      onServingCache?.call(false);
+      return data;
     } on DioException catch (e) {
+      // Fall back to disk ONLY for transport failures. A 4xx is the server
+      // answering — serving stale data over a 401 or a 404 would hide a real
+      // problem behind data that looks fine.
+      if (cache != null && _isTransport(e)) {
+        final cached = await cache!.read(key);
+        if (cached != null) {
+          onServingCache?.call(true);
+          return cached;
+        }
+      }
       throw ApiException.fromDio(e);
     }
+  }
+
+  /// True when the request never got an answer, as opposed to getting a bad one.
+  bool _isTransport(DioException e) {
+    if (e.response != null) return false;
+    return e.type == DioExceptionType.connectionError ||
+        e.type == DioExceptionType.connectionTimeout ||
+        e.type == DioExceptionType.receiveTimeout ||
+        e.type == DioExceptionType.sendTimeout ||
+        e.type == DioExceptionType.unknown;
   }
 
   Future<dynamic> postJson(String path, {Object? body, bool skipAuth = false}) async {
@@ -141,7 +228,7 @@ class ApiClient {
         data: body,
         options: skipAuth ? Options(extra: {'skipAuth': true}) : null,
       );
-      return r.data;
+      return _requireJson(r.data);
     } on DioException catch (e) {
       throw ApiException.fromDio(e);
     }
@@ -150,7 +237,7 @@ class ApiClient {
   Future<dynamic> patchJson(String path, {Object? body}) async {
     try {
       final r = await _dio.patch<dynamic>(path, data: body);
-      return r.data;
+      return _requireJson(r.data);
     } on DioException catch (e) {
       throw ApiException.fromDio(e);
     }
@@ -159,7 +246,7 @@ class ApiClient {
   Future<dynamic> deleteJson(String path, {Object? body}) async {
     try {
       final r = await _dio.delete<dynamic>(path, data: body);
-      return r.data;
+      return _requireJson(r.data);
     } on DioException catch (e) {
       throw ApiException.fromDio(e);
     }

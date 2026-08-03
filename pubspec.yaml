@@ -18,6 +18,12 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   # Date formatting.
   intl: ^0.19.0
+  # Device notifications for due reminders (foreground poller — see
+  # NotificationService). Background/closed-app delivery would need FCM.
+  flutter_local_notifications: ^17.2.3
+  # Somewhere to persist the offline response cache. Already present
+  # transitively; declared because we now depend on it directly.
+  path_provider: ^2.1.4
 
 dev_dependencies:
   flutter_test:

@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api_client.dart';
 import '../core/config.dart';
+import '../core/response_cache.dart';
 import '../core/token_storage.dart';
 import '../data/analytics_repository.dart';
 import '../data/auth_repository.dart';
@@ -9,6 +10,9 @@ import '../data/goal_repository.dart';
 import '../data/habit_repository.dart';
 import '../data/list_repository.dart';
 import '../data/reminder_repository.dart';
+import '../data/chat_repository.dart';
+import '../data/saved_filter_repository.dart';
+import '../data/session_repository.dart';
 import '../data/tag_repository.dart';
 import '../data/task_repository.dart';
 import 'auth_provider.dart';
@@ -22,6 +26,13 @@ final apiBaseProvider = StateProvider<String>((ref) => AppConfig.fallbackBaseUrl
 
 /// The Dio-backed client. Rebuilds whenever the base URL changes. On a refresh
 /// failure it flips auth to unauthenticated via the auth controller.
+final responseCacheProvider = Provider<ResponseCache>((ref) => ResponseCache());
+
+/// True while the app is showing data read from disk because the server could
+/// not be reached. Surfaced in the UI so "everything looks normal but is hours
+/// old" is never a silent state.
+final servingCacheProvider = StateProvider<bool>((ref) => false);
+
 final apiClientProvider = Provider<ApiClient>((ref) {
   final storage = ref.watch(tokenStorageProvider);
   final base = ref.watch(apiBaseProvider);
@@ -29,6 +40,11 @@ final apiClientProvider = Provider<ApiClient>((ref) {
     storage: storage,
     apiBase: AppConfig(baseUrl: base).apiBase,
     onSessionExpired: () => ref.read(authControllerProvider.notifier).onSessionExpired(),
+    cache: ref.watch(responseCacheProvider),
+    onServingCache: (serving) {
+      final notifier = ref.read(servingCacheProvider.notifier);
+      if (notifier.state != serving) notifier.state = serving;
+    },
   );
 });
 
@@ -42,3 +58,6 @@ final habitRepositoryProvider = Provider((ref) => HabitRepository(ref.watch(apiC
 final goalRepositoryProvider = Provider((ref) => GoalRepository(ref.watch(apiClientProvider)));
 final reminderRepositoryProvider = Provider((ref) => ReminderRepository(ref.watch(apiClientProvider)));
 final analyticsRepositoryProvider = Provider((ref) => AnalyticsRepository(ref.watch(apiClientProvider)));
+final sessionRepositoryProvider = Provider((ref) => SessionRepository(ref.watch(apiClientProvider)));
+final savedFilterRepositoryProvider = Provider((ref) => SavedFilterRepository(ref.watch(apiClientProvider)));
+final chatRepositoryProvider = Provider((ref) => ChatRepository(ref.watch(apiClientProvider)));

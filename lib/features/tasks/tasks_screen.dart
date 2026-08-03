@@ -8,6 +8,9 @@ import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
 import '../../providers/tasks_provider.dart';
 import '../../widgets/common.dart';
+import '../focus/focus_screen.dart';
+import 'calendar_view.dart';
+import 'matrix_view.dart';
 import 'task_card.dart';
 import 'task_editor_screen.dart';
 import 'tasks_drawer.dart';
@@ -18,7 +21,12 @@ class TasksScreen extends ConsumerStatefulWidget {
   ConsumerState<TasksScreen> createState() => _TasksScreenState();
 }
 
+enum TaskView { list, calendar, matrix }
+
 class _TasksScreenState extends ConsumerState<TasksScreen> {
+  // View choice is local: it changes how the SAME filtered set is presented,
+  // so it does not belong in the shared filter state.
+  TaskView _view = TaskView.list;
   bool _searching = false;
   final _searchCtrl = TextEditingController();
 
@@ -114,6 +122,43 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
               },
             )
           else ...[
+            PopupMenuButton<TaskView>(
+              tooltip: 'View',
+              icon: Icon(switch (_view) {
+                TaskView.list => Icons.view_list_outlined,
+                TaskView.calendar => Icons.calendar_month_outlined,
+                TaskView.matrix => Icons.grid_view_outlined,
+              }),
+              onSelected: (v) => setState(() => _view = v),
+              itemBuilder: (_) => [
+                for (final entry in const {
+                  TaskView.list: ('List', Icons.view_list_outlined),
+                  TaskView.calendar: ('Calendar', Icons.calendar_month_outlined),
+                  TaskView.matrix: ('Matrix', Icons.grid_view_outlined),
+                }.entries)
+                  PopupMenuItem(
+                    value: entry.key,
+                    child: Row(
+                      children: [
+                        Icon(_view == entry.key ? Icons.check : entry.value.$2, size: 18),
+                        const SizedBox(width: 8),
+                        Text(entry.value.$1),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            // Entry point for the pomodoro timer. It lives here rather than as a
+            // sixth bottom-nav destination — five is already the Material maximum
+            // and six labels crowd a 360dp screen — and this is where the intent
+            // starts, since a pomodoro is usually run FOR a task.
+            IconButton(
+              tooltip: 'Focus timer',
+              icon: const Icon(Icons.timer_outlined),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const FocusScreen()),
+              ),
+            ),
             IconButton(
               icon: const Icon(Icons.search),
               onPressed: () => setState(() => _searching = true),
@@ -157,6 +202,14 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
         ),
         data: (_) {
           final visible = ref.watch(visibleTasksProvider);
+          if (_view != TaskView.list) {
+            return RefreshIndicator(
+              onRefresh: () => ref.read(tasksControllerProvider.notifier).refresh(),
+              child: _view == TaskView.calendar
+                  ? CalendarView(onTap: _openEditor, onToggle: _toggle)
+                  : MatrixView(onTap: _openEditor, onToggle: _toggle),
+            );
+          }
           return RefreshIndicator(
             onRefresh: () => ref.read(tasksControllerProvider.notifier).refresh(),
             child: visible.isEmpty

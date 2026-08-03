@@ -26,6 +26,13 @@ class DashboardSummary {
 
   int statusCount(String s) => byStatus[s] ?? 0;
 
+  /// Work still open — everything not closed as completed or wont-do.
+  ///
+  /// `total` is the ALL-TIME task count, so pairing it with a 7-day numerator
+  /// produces a ratio that shrinks forever as the archive grows. This is the
+  /// comparable denominator for "how much of what's on my plate did I finish".
+  int get openTasks => statusCount('todo') + statusCount('in-progress');
+
   factory DashboardSummary.fromJson(Map<String, dynamic> j) {
     final tasks = asMap(j['tasks']);
     final bs = asMap(tasks['byStatus']);

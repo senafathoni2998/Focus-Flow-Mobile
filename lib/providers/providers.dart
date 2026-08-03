@@ -9,6 +9,7 @@ import '../data/goal_repository.dart';
 import '../data/habit_repository.dart';
 import '../data/list_repository.dart';
 import '../data/reminder_repository.dart';
+import '../data/saved_filter_repository.dart';
 import '../data/session_repository.dart';
 import '../data/tag_repository.dart';
 import '../data/task_repository.dart';
@@ -44,3 +45,4 @@ final goalRepositoryProvider = Provider((ref) => GoalRepository(ref.watch(apiCli
 final reminderRepositoryProvider = Provider((ref) => ReminderRepository(ref.watch(apiClientProvider)));
 final analyticsRepositoryProvider = Provider((ref) => AnalyticsRepository(ref.watch(apiClientProvider)));
 final sessionRepositoryProvider = Provider((ref) => SessionRepository(ref.watch(apiClientProvider)));
+final savedFilterRepositoryProvider = Provider((ref) => SavedFilterRepository(ref.watch(apiClientProvider)));

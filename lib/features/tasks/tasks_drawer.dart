@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
 import '../../core/horizons.dart';
+import '../../core/saved_filter_query.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/filter_provider.dart';
 import '../../providers/lists_provider.dart';
+import '../../providers/saved_filters_provider.dart';
 import '../../providers/tags_provider.dart';
 import '../../widgets/common.dart';
 
@@ -95,6 +97,52 @@ class TasksDrawer extends ConsumerWidget {
               leading: const Icon(Icons.add),
               title: const Text('New list'),
               onTap: () => _createList(context, ref),
+            ),
+            const Divider(),
+            _sectionLabel(context, 'Saved views'),
+            ...ref.watch(savedFiltersControllerProvider).when(
+              loading: () => const [
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: LinearProgressIndicator(),
+                ),
+              ],
+              error: (e, _) => [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Text('Could not load saved views.',
+                      style: TextStyle(color: Theme.of(context).colorScheme.outline)),
+                ),
+              ],
+              data: (views) => [
+                for (final v in views)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.bookmark_outline),
+                    title: Text(v.name),
+                    // Highlights the view you are actually looking at, which is
+                    // the whole reason the query is canonicalised server-side.
+                    selected: filterMatchesQuery(filter, v.query),
+                    onTap: () => setFilter(decodeFilter(v.query, base: filter)),
+                    onLongPress: () async {
+                      final ok = await confirmDialog(context,
+                          title: 'Delete saved view',
+                          message: 'Delete "\${v.name}"? Your tasks are not affected.');
+                      if (!ok) return;
+                      try {
+                        await ref.read(savedFiltersControllerProvider.notifier).delete(v.id);
+                      } catch (e) {
+                        if (context.mounted) showError(context, e);
+                      }
+                    },
+                  ),
+              ],
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.bookmark_add_outlined),
+              title: const Text('Save current view'),
+              onTap: () => _saveCurrentView(context, ref, filter),
             ),
             if (tags.isNotEmpty) ...[
               const Divider(),
@@ -190,5 +238,47 @@ class _Badge extends StatelessWidget {
       ),
       child: Text('$count', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
     );
+  }
+}
+
+/// Name and store the current filter as a saved view.
+///
+/// The name is required and must be unique per user; the server enforces that
+/// with a unique index and answers 409, which is surfaced verbatim rather than
+/// being flattened into a generic failure — "you already have a view called
+/// Today" is actionable, "could not save" is not.
+Future<void> _saveCurrentView(BuildContext context, WidgetRef ref, TaskFilter filter) async {
+  final controller = TextEditingController();
+  final name = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Save current view'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.sentences,
+        decoration: const InputDecoration(labelText: 'Name', hintText: 'e.g. This month, high priority'),
+        onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  if (name == null || name.isEmpty) return;
+
+  try {
+    await ref.read(savedFiltersControllerProvider.notifier).create(
+          name: name,
+          query: encodeFilter(filter),
+        );
+    if (context.mounted) showInfo(context, 'Saved "$name"');
+  } catch (e) {
+    if (context.mounted) showError(context, e);
   }
 }

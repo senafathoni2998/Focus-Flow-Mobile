@@ -21,6 +21,7 @@ class UnsentChangesScreen extends ConsumerWidget {
     final List<QueuedOp> pending = ref.watch(pendingOpsProvider);
     final List<QueuedOp> dead = ref.watch(deadOpsProvider);
     final FlushState state = ref.watch(queueStateProvider);
+    final bool corrupted = ref.watch(queueCorruptedProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -34,11 +35,23 @@ class UnsentChangesScreen extends ConsumerWidget {
         ],
       ),
       body: pending.isEmpty && dead.isEmpty
-          ? const EmptyState(
-              icon: Icons.cloud_done_outlined,
-              title: 'Everything is saved',
-              subtitle: 'Changes you make without a connection will wait here.',
-            )
+          ? (corrupted
+              // Never claim everything is saved when we know it is not. A queue
+              // file we could not read was moved aside rather than deleted, so
+              // the work still exists on the device even though the app can no
+              // longer act on it.
+              ? EmptyState(
+                  icon: Icons.report_outlined,
+                  title: 'Some unsent changes could not be recovered',
+                  subtitle:
+                      'A saved queue file could not be read, so it was set aside '
+                      'rather than deleted. Anything it held was not sent.',
+                )
+              : const EmptyState(
+                  icon: Icons.cloud_done_outlined,
+                  title: 'Everything is saved',
+                  subtitle: 'Changes you make without a connection will wait here.',
+                ))
           : ListView(
               padding: const EdgeInsets.only(bottom: 32),
               children: <Widget>[

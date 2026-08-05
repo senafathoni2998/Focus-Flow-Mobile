@@ -186,6 +186,52 @@ void main() {
     expect(doc.ops.single.entity, OpEntity.list);
   });
 
+  test('overlapping saves cannot corrupt the file', () async {
+    // REGRESSION. Every writer used to derive the same `<file>.tmp`, and
+    // writeAsString truncates at 0, so two overlapping saves wrote over each
+    // other in one buffer: the shorter overwrote the longer's prefix and left
+    // its tail past the closing brace. The loser's rename threw
+    // PathNotFoundException, which _commit swallowed. The published file was
+    // unparseable, so the next launch set it aside and the user's ENTIRE queue —
+    // pending ops and dead letters alike — was gone, while the Unsent changes
+    // screen said "Everything is saved".
+    //
+    // Reachable on any ordinary day: submit() commits without the flusher's
+    // single-flight guard, so a write made while the queue drains races the
+    // drain's own commit.
+    store.setScope('u1');
+    final QueueDoc long = QueueDoc(
+      seq: 9,
+      ops: List<QueuedOp>.generate(8, (int i) => op("op$i", seq: i + 1)),
+    );
+    final QueueDoc short = QueueDoc(seq: 9, ops: <QueuedOp>[op('op0', seq: 1)]);
+
+    // Long first, short second — the ordering a growing submit() racing a
+    // shrinking _succeedHead actually produces.
+    await Future.wait(<Future<void>>[store.save(long), store.save(short)]);
+
+    final WriteQueueStore cold = WriteQueueStore(directory: dir)..setScope('u1');
+    final QueueDoc doc = await cold.load();
+    expect(cold.corruptDetected, isFalse);
+    expect(doc.ops, isNotEmpty);
+    // And no stray temp file left behind to be mistaken for the real one.
+    final Iterable<String> names =
+        dir.listSync().whereType<File>().map((File f) => f.uri.pathSegments.last);
+    expect(names.where((String n) => n.endsWith('.tmp')), isEmpty);
+  });
+
+  test('a failed write does not poison every save after it', () async {
+    // The serialising chain has to survive an error, or one IO failure would
+    // reject every later save for the life of the process.
+    store.setScope('u1');
+    await store.save(QueueDoc(ops: <QueuedOp>[op('op_1')]));
+    store.setScope(null);
+    await store.save(QueueDoc(ops: <QueuedOp>[op('op_2')])); // no-op, unscoped
+    store.setScope('u1');
+    await store.save(QueueDoc(ops: <QueuedOp>[op('op_3')]));
+    expect((await store.load()).ops.single.id, 'op_3');
+  });
+
   test('an absent file is an empty queue, not an error', () async {
     store.setScope('u1');
     expect((await store.load()).isEmpty, isTrue);

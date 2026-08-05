@@ -185,15 +185,48 @@ class WriteQueueStore {
 
   /// One atomic write. Throws on failure — unlike the read cache, a write that
   /// silently did not happen here means losing the user's work.
-  Future<void> save(QueueDoc doc) async {
+  ///
+  /// SERIALISED, and that is not caution. Every writer used to derive the same
+  /// `<file>.tmp`, and `writeAsString` truncates at 0, so two overlapping saves
+  /// wrote over each other in one file: the shorter one overwrote the longer
+  /// one's prefix and left its tail past the closing brace, then whichever
+  /// renamed first won and the loser threw PathNotFoundException. The published
+  /// file was unparseable, so the next launch set it aside and the user's entire
+  /// queue — pending ops AND dead letters — was gone.
+  ///
+  /// That was trivially reachable: `submit()` commits without holding the
+  /// flusher's single-flight guard, so any write the user makes while the queue
+  /// is draining races the drain's own commit. Verified: 30/30 trials corrupted.
+  Future<void> save(QueueDoc doc) {
+    final Future<void> queued = _writeChain.then<void>((_) => _writeOnce(doc));
+    // The chain has to survive a failed write, or one IO error would reject
+    // every save after it for the life of the process.
+    _writeChain = queued.then<void>((_) {}, onError: (Object _) {});
+    return queued;
+  }
+
+  Future<void> _writeChain = Future<void>.value();
+  int _tmpCounter = 0;
+
+  Future<void> _writeOnce(QueueDoc doc) async {
     final File? file = await _file();
     if (file == null) return;
-    final File tmp = File('${file.path}.tmp');
-    // Write-then-rename: a process killed mid-write would otherwise leave a
-    // truncated file, which reads as corruption rather than as the previous
-    // good state.
-    await tmp.writeAsString(jsonEncode(doc.toJson()), flush: true);
-    await tmp.rename(file.path);
+    // A distinct name per call, so even if serialisation were ever bypassed two
+    // writers could not share a buffer. Belt as well as braces.
+    final File tmp = File('${file.path}.${_tmpCounter++}.tmp');
+    try {
+      // Write-then-rename: a process killed mid-write would otherwise leave a
+      // truncated file, which reads as corruption rather than as the previous
+      // good state.
+      await tmp.writeAsString(jsonEncode(doc.toJson()), flush: true);
+      await tmp.rename(file.path);
+    } catch (e) {
+      // Never leave a stray temp file behind to be mistaken for the real one.
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
+      rethrow;
+    }
   }
 
   /// Delete this account's queue. Only ever called for an explicit

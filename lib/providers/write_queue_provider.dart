@@ -26,6 +26,10 @@ final queueIdMapProvider =
 final inFlightOpIdProvider = StateProvider<String?>((ref) => null);
 final queueStateProvider = StateProvider<FlushState>((ref) => FlushState.idle);
 
+/// Set when a queue file could not be parsed and was moved aside. The work in it
+/// is gone from the app; saying so is the least we owe the user.
+final queueCorruptedProvider = StateProvider<bool>((ref) => false);
+
 final queueFlusherProvider = Provider<QueueFlusher>((ref) {
   final QueueFlusher flusher = QueueFlusher(
     store: ref.watch(writeQueueStoreProvider),
@@ -33,12 +37,14 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
     // Read at call time, not captured: the whole point is to notice that the
     // signed-in user CHANGED while a flush was in flight.
     currentUserId: () => ref.read(tokenStorageProvider).getUserId(),
-    onChanged: (QueueDoc doc, String? inFlightOpId, FlushState state) {
+    onChanged: (QueueDoc doc, String? inFlightOpId, FlushState state,
+        bool recoveredFromCorruption) {
       ref.read(pendingOpsProvider.notifier).state = doc.ops;
       ref.read(deadOpsProvider.notifier).state = doc.dead;
       ref.read(queueIdMapProvider.notifier).state = doc.idMap;
       ref.read(inFlightOpIdProvider.notifier).state = inFlightOpId;
       ref.read(queueStateProvider.notifier).state = state;
+      ref.read(queueCorruptedProvider.notifier).state = recoveredFromCorruption;
     },
     onServerRow: (OpEntity entity, Map<String, dynamic> row) {
       // Written into server truth in the same turn the op leaves the queue, so

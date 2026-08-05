@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -23,6 +24,26 @@ class FakeTransport implements QueueTransport {
     sent.add(op);
     final int i = sent.length - 1;
     return script[i < script.length ? i : script.length - 1];
+  }
+}
+
+/// Holds a send open until the test releases it, so the window between "on the
+/// wire" and "answered" can be attacked directly.
+class GatedTransport implements QueueTransport {
+  GatedTransport(this.result);
+  final TransportResult result;
+  final List<ResolvedOp> sent = <ResolvedOp>[];
+  final Completer<void> gate = Completer<void>();
+
+  /// Only the FIRST send is held and succeeds. Everything after it fails as a
+  /// transport error, so the queue stops instead of draining away the state the
+  /// test is about to assert on.
+  @override
+  Future<TransportResult> send(ResolvedOp op) async {
+    sent.add(op);
+    if (sent.length > 1) return offline();
+    await gate.future;
+    return result;
   }
 }
 
@@ -76,6 +97,16 @@ Future<void> pump() async {
   }
 }
 
+/// Like [pump] but yields REAL time, so the store's disk write can finish.
+///
+/// Needed only where a submit() is deliberately NOT awaited — the queue persists
+/// before it sends, and zero-duration ticks do not let file IO complete.
+Future<void> settle() async {
+  for (int i = 0; i < 20; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 2));
+  }
+}
+
 void main() {
   late Directory dir;
   late WriteQueueStore store;
@@ -94,7 +125,7 @@ void main() {
       store: store,
       transport: transport,
       currentUserId: () async => uid,
-      onChanged: (QueueDoc _, String? __, FlushState ___) {},
+      onChanged: (QueueDoc _, String? __, FlushState ___, bool ____) {},
       onServerRow: (OpEntity _, Map<String, dynamic> row) => serverTasks.add(row),
       onDrained: (Set<OpEntity> _) => drained++,
       nowMs: () => now,
@@ -368,7 +399,7 @@ void main() {
         calls++;
         return calls <= 1 ? 'u1' : 'u2';
       },
-      onChanged: (QueueDoc _, String? __, FlushState ___) {},
+      onChanged: (QueueDoc _, String? __, FlushState ___, bool ____) {},
       onServerRow: (OpEntity _, Map<String, dynamic> __) {},
       onDrained: (Set<OpEntity> _) {},
       nowMs: () => now,
@@ -545,6 +576,119 @@ void main() {
       await flusher.discardDead(flusher.doc.dead.first.id);
       expect(flusher.deadCount, 1);
     });
+  });
+
+  group('the queue can change under a send', () {
+    test('a delete does NOT annihilate a create that is on the wire', () async {
+      // REGRESSION. submit() runs without the single-flight guard on purpose —
+      // it has to stay responsive while the queue drains. Without an in-flight
+      // check the collapse could delete the very op a send was awaiting, and the
+      // outcome handler would then act on whatever moved into its place.
+      // `attempts` does not cover this: it increments when a send FAILS, so an
+      // op still in flight sits at attempts == 0.
+      final GatedTransport gated = GatedTransport(ok(id: 'srvA'));
+      flusher = QueueFlusher(
+        store: store,
+        transport: gated,
+        currentUserId: () async => uid,
+        onChanged: (QueueDoc _, String? __, FlushState ___, bool ____) {},
+        onServerRow: (OpEntity _, Map<String, dynamic> __) {},
+        onDrained: (Set<OpEntity> _) {},
+        nowMs: () => now,
+      );
+
+      unawaited(flusher.submit(mkOp('a', assigns: 'local_a')));
+      await settle();
+      expect(gated.sent.length, 1);
+      expect(flusher.inFlightOpId, isNotNull);
+
+      await flusher.submit(mkOp('d',
+          kind: OpKind.deleteTask, target: 'local_a', deps: <String>['local_a']));
+      // Both survive: the create may already exist on the server, so only the
+      // delete can clean it up.
+      expect(flusher.pendingCount, 2);
+
+      gated.gate.complete();
+      await settle();
+
+      // The create was acked, its id recorded, and the delete then went out
+      // against the REAL id — which is only possible because it was still there.
+      expect(flusher.doc.idMap['local_a'], 'srvA');
+      expect(gated.sent.length, 2);
+      expect(gated.sent[1].method, 'DELETE');
+      expect(gated.sent[1].path, '/tasks/srvA');
+    });
+
+    test('a response landing after a scope change never touches the new queue',
+        () async {
+      // REGRESSION. The user-id check sat before the send only, and the outcome
+      // handlers took `_doc.ops.first`. A send that straddled a sign-out and a
+      // sign-in as somebody else therefore had its outcome applied to whatever
+      // _doc held by then, deleting one of THAT account's ops.
+      //
+      // Two guards now prevent it and EITHER ALONE is sufficient: the handlers
+      // look their op up by id, and the scope is re-checked after the await.
+      // This test pins the pair — verified by removing both, which makes it
+      // fail, and by removing each alone, which does not. That redundancy is
+      // deliberate on a cross-account path; it is not an accident.
+      final GatedTransport gated = GatedTransport(ok(id: 'srvA'));
+      flusher = QueueFlusher(
+        store: store,
+        transport: gated,
+        currentUserId: () async => uid,
+        onChanged: (QueueDoc _, String? __, FlushState ___, bool ____) {},
+        onServerRow: (OpEntity _, Map<String, dynamic> __) {},
+        onDrained: (Set<OpEntity> _) {},
+        nowMs: () => now,
+      );
+
+      unawaited(flusher.submit(mkOp('a', assigns: 'local_a')));
+      await settle();
+      expect(gated.sent.length, 1);
+
+      // Somebody else signs in while that send is still open.
+      uid = 'u2';
+      final WriteQueueStore other = WriteQueueStore(directory: dir)..setScope('u2');
+      await other.save(QueueDoc(
+        seq: 1,
+        ops: <QueuedOp>[mkOp('theirs', assigns: 'local_theirs').copyWith(seq: 1)],
+      ));
+      await flusher.setScope('u2');
+      await settle();
+
+      gated.gate.complete();
+      await settle();
+
+      // u1's response was abandoned: u2's op is untouched and u1's id mapping
+      // was NOT written into u2's document.
+      expect(flusher.doc.ops.map((QueuedOp o) => o.id), contains('theirs'));
+      expect(flusher.doc.idMap.containsKey('local_a'), isFalse);
+
+      // And u1's own work is still in u1's own file, waiting for them.
+      final WriteQueueStore u1 = WriteQueueStore(directory: dir)..setScope('u1');
+      expect((await u1.load()).ops, isNotEmpty);
+    });
+  });
+
+  test('retryDead keeps the on-the-wire count', () async {
+    // REGRESSION. retryDead rebuilt the op without `attempts`, defaulting it to
+    // 0 — which re-armed cancelCreateThenDelete for a create that HAD reached
+    // the server and merely lost its answer, leaking the row it made.
+    flusher = build(<TransportResult>[offline(), http(400)]);
+    await flusher.submit(mkOp('a', assigns: 'local_a'));
+    await pump();
+    await flusher.flush(force: true);
+    await pump();
+
+    expect(flusher.deadCount, 1);
+    final QueuedOp dead = flusher.doc.dead.single;
+    expect(dead.attempts, greaterThan(0));
+
+    await flusher.retryDead(dead.id);
+    expect(flusher.doc.ops.single.attempts, dead.attempts);
+    // The BUDGETS do start fresh — that is the point of retrying.
+    expect(flusher.doc.ops.single.serverAttempts, 0);
+    expect(flusher.doc.ops.single.pendingAttempts, 0);
   });
 
   test('a signed-out flusher holds nothing in memory', () async {

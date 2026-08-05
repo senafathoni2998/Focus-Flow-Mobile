@@ -93,7 +93,8 @@ class QueueFlusher {
     required WriteQueueStore store,
     required QueueTransport transport,
     required Future<String?> Function() currentUserId,
-    required void Function(QueueDoc doc, String? inFlightOpId, FlushState state)
+    required void Function(QueueDoc doc, String? inFlightOpId, FlushState state,
+            bool recoveredFromCorruption)
         onChanged,
     required void Function(OpEntity entity, Map<String, dynamic> row) onServerRow,
     required void Function(Set<OpEntity> touched) onDrained,
@@ -109,7 +110,8 @@ class QueueFlusher {
   final WriteQueueStore _store;
   final QueueTransport _transport;
   final Future<String?> Function() _currentUserId;
-  final void Function(QueueDoc doc, String? inFlightOpId, FlushState state)
+  final void Function(QueueDoc doc, String? inFlightOpId, FlushState state,
+          bool recoveredFromCorruption)
       _onChanged;
   final void Function(OpEntity entity, Map<String, dynamic> row) _onServerRow;
   final void Function(Set<OpEntity> touched) _onDrained;
@@ -239,7 +241,21 @@ class QueueFlusher {
 
     // A task typed and then deleted while still offline should never touch the
     // network at all.
-    if (staged.kind == OpKind.deleteTask && isLocalId(staged.target)) {
+    //
+    // NOT while its create is on the wire. `submit()` deliberately runs without
+    // the single-flight guard (it must stay responsive while the queue drains),
+    // so without this check the collapse could delete the very op a send was
+    // awaiting — and the outcome handler would then act on whatever had moved
+    // into its place. `attempts` does not cover this: it is incremented when a
+    // send FAILS, so an op still in flight is sitting at attempts == 0.
+    final bool createIsInFlight = _inFlightOpId != null &&
+        ops.any((QueuedOp o) =>
+            o.id == _inFlightOpId &&
+            o.kind == OpKind.createTask &&
+            o.assigns == staged.target);
+    if (staged.kind == OpKind.deleteTask &&
+        isLocalId(staged.target) &&
+        !createIsInFlight) {
       final List<QueuedOp>? collapsed =
           cancelCreateThenDelete(ops, staged.target);
       if (collapsed != null) {
@@ -277,7 +293,8 @@ class QueueFlusher {
       final QueuedOp head = _doc.ops.first;
       final Resolution r = resolve(head, _doc.idMap);
       if (!r.isReady) {
-        await _dieHead(DeadReason.orphaned,
+        await _dieHead(head,
+            reason: DeadReason.orphaned,
             message: 'the task it belongs to was never created');
         return (outcome: SubmitOutcome.deferred, response: null);
       }
@@ -285,8 +302,21 @@ class QueueFlusher {
       _inFlightOpId = head.id;
       _state = FlushState.running;
       _emit();
+      final String? sentUnderScope = _store.scope;
       final TransportResult res = await _send(r.op!);
       _inFlightOpId = null;
+
+      // RE-CHECKED AFTER THE AWAIT, not only before it. The send can straddle a
+      // sign-out and a sign-in as somebody else: `setScope` replaces `_doc`
+      // wholesale with the new account's queue, and applying this outcome to it
+      // would delete one of THEIR ops. Abandoning the outcome is safe — the op
+      // is still in its own account's file with its idempotency key intact, so
+      // replaying it resolves whatever actually happened.
+      if (sentUnderScope != _store.scope) {
+        _state = FlushState.idle;
+        _emit();
+        return (outcome: SubmitOutcome.deferred, response: null);
+      }
 
       final OpOutcome outcome = classify(
         kind: head.kind,
@@ -297,7 +327,7 @@ class QueueFlusher {
 
       switch (outcome) {
         case OpOutcome.succeeded:
-          await _succeedHead(res, r.op!);
+          await _succeedHead(head, res, r.op!);
           _state = FlushState.idle;
           if (_doc.ops.isEmpty && _touched.isNotEmpty) {
             final Set<OpEntity> touched = Set<OpEntity>.from(_touched);
@@ -327,7 +357,7 @@ class QueueFlusher {
 
         case OpOutcome.retryServer:
         case OpOutcome.retryPending:
-          await _penaliseHead(outcome, res);
+          await _penaliseHead(head, outcome, res);
           _armForHead();
           return (outcome: SubmitOutcome.deferred, response: null);
       }
@@ -401,7 +431,8 @@ class QueueFlusher {
       final QueuedOp head = _doc.ops.first;
 
       if (isExpired(head, _nowMs())) {
-        await _dieHead(DeadReason.expired,
+        await _dieHead(head,
+            reason: DeadReason.expired,
             message: 'This waited more than $kExpiryDays days without a connection.');
         continue;
       }
@@ -420,7 +451,8 @@ class QueueFlusher {
       if (!r.isReady) {
         // FAIL CLOSED. Shipping a `local_` id to the server would 404 on the
         // parent lookup or, worse, create an orphan the user can never find.
-        await _dieHead(DeadReason.orphaned,
+        await _dieHead(head,
+            reason: DeadReason.orphaned,
             message: 'the task it belongs to was never created');
         continue;
       }
@@ -428,8 +460,16 @@ class QueueFlusher {
       _inFlightOpId = head.id;
       _state = FlushState.running;
       _emit();
+      final String? sentUnderScope = _store.scope;
       final TransportResult res = await _send(r.op!);
       _inFlightOpId = null;
+
+      // See the note in _submitInline: the scope can change across this await.
+      if (sentUnderScope != _store.scope) {
+        _state = FlushState.idle;
+        _emit();
+        return;
+      }
 
       final OpOutcome outcome = classify(
         kind: head.kind,
@@ -440,13 +480,15 @@ class QueueFlusher {
 
       switch (outcome) {
         case OpOutcome.succeeded:
-          await _succeedHead(res, r.op!);
+          await _succeedHead(head, res, r.op!);
 
         case OpOutcome.terminal:
           // The pass CONTINUES: one rejected title must not block every other
           // write behind it forever.
-          await _dieHead(DeadReason.rejected,
-              status: res.status, message: res.message);
+          await _dieHead(head,
+              reason: DeadReason.rejected,
+              status: res.status,
+              message: res.message);
 
         case OpOutcome.authPaused:
           pauseForAuth();
@@ -462,7 +504,7 @@ class QueueFlusher {
 
         case OpOutcome.retryServer:
         case OpOutcome.retryPending:
-          final bool stillPending = await _penaliseHead(outcome, res);
+          final bool stillPending = await _penaliseHead(head, outcome, res);
           if (stillPending) {
             _state = FlushState.idle;
             _emit();
@@ -523,9 +565,33 @@ class QueueFlusher {
 
   // --- outcomes --------------------------------------------------------------
 
-  Future<void> _succeedHead(TransportResult res, ResolvedOp resolved) async {
-    final QueuedOp head = _doc.ops.first;
-    final List<QueuedOp> remaining = _doc.ops.sublist(1);
+  /// Where the op that was just sent sits now, or -1 if it is gone.
+  ///
+  /// EVERY outcome handler looks the op up by ID rather than taking
+  /// `_doc.ops.first`. Between the send and its answer the queue can genuinely
+  /// change underneath: `submit()` runs without the flusher's single-flight
+  /// guard and can collapse a create+delete pair, and `setScope()` can replace
+  /// `_doc` wholesale. Acting on "whatever is at the head now" meant a
+  /// completed send deleting an UNRELATED op — including one belonging to a
+  /// different account.
+  int _indexOfSent(QueuedOp sent) =>
+      _doc.ops.indexWhere((QueuedOp o) => o.id == sent.id);
+
+  List<QueuedOp> _without(int i) => <QueuedOp>[
+        ..._doc.ops.sublist(0, i),
+        ..._doc.ops.sublist(i + 1),
+      ];
+
+  Future<void> _succeedHead(
+      QueuedOp head, TransportResult res, ResolvedOp resolved) async {
+    final int i = _indexOfSent(head);
+    if (i < 0) {
+      // The op left the queue while it was on the wire. Its work DID land, so
+      // the id mapping is still worth recording; removing some other row is not.
+      _offlineStreak = 0;
+      return;
+    }
+    final List<QueuedOp> remaining = _without(i);
     Map<String, String> idMap = _doc.idMap;
 
     final String? assigns = head.assigns;
@@ -563,8 +629,10 @@ class QueueFlusher {
 
   /// Charge an attempt. Returns true if the op is still pending, false if the
   /// budget ran out and it was dead-lettered.
-  Future<bool> _penaliseHead(OpOutcome outcome, TransportResult res) async {
-    final QueuedOp head = _doc.ops.first;
+  Future<bool> _penaliseHead(
+      QueuedOp head, OpOutcome outcome, TransportResult res) async {
+    final int i = _indexOfSent(head);
+    if (i < 0) return false; // gone from under us; nothing to charge
     final bool pendingKind = outcome == OpOutcome.retryPending;
 
     final int serverAttempts =
@@ -578,7 +646,8 @@ class QueueFlusher {
 
     if (exhausted) {
       await _dieHead(
-        DeadReason.unconfirmed,
+        head,
+        reason: DeadReason.unconfirmed,
         status: res.status,
         message: pendingKind
             ? "We couldn't confirm this was saved."
@@ -602,14 +671,16 @@ class QueueFlusher {
       pendingAttempts: pendingAttempts,
       nextAtMs: _nowMs() + wait.inMilliseconds,
     );
-    await _commit(_doc.copyWith(
-      ops: <QueuedOp>[updated, ..._doc.ops.sublist(1)],
-    ));
+    final List<QueuedOp> ops = <QueuedOp>[..._doc.ops];
+    ops[i] = updated;
+    await _commit(_doc.copyWith(ops: ops));
     return true;
   }
 
-  Future<void> _dieHead(DeadReason reason, {int? status, String? message}) async {
-    final QueuedOp head = _doc.ops.first;
+  Future<void> _dieHead(QueuedOp head,
+      {DeadReason reason = DeadReason.rejected, int? status, String? message}) async {
+    final int i = _indexOfSent(head);
+    if (i < 0) return;
     final int now = _nowMs();
 
     final List<QueuedOp> dying = <QueuedOp>[
@@ -621,7 +692,7 @@ class QueueFlusher {
       ),
     ];
 
-    List<QueuedOp> remaining = _doc.ops.sublist(1);
+    List<QueuedOp> remaining = _without(i);
 
     // A create that will never happen takes its dependents with it, in the SAME
     // write. Sending them would produce one 404 and one baffling dead letter per
@@ -676,6 +747,13 @@ class QueueFlusher {
           : dead.key,
       summary: dead.summary,
       createdAtMs: _nowMs(),
+      // CARRIED OVER, not reset. `attempts` means "times this reached the
+      // wire", and cancelCreateThenDelete relies on it: a create that was sent
+      // and merely lost its answer may already exist on the server, so only the
+      // delete can clean it up. Resetting it to 0 re-armed the annihilation and
+      // would have leaked that row. The two BUDGET counters do start fresh —
+      // that is the point of retrying.
+      attempts: dead.attempts,
       );
 
     final List<QueuedOp> deadList = <QueuedOp>[..._doc.dead]..removeAt(i);
@@ -716,7 +794,15 @@ class QueueFlusher {
     _emit();
   }
 
-  void _emit() => _onChanged(_doc, _inFlightOpId, _state);
+    /// True once a load found a queue file it could not parse and moved it aside.
+  ///
+  /// It has to reach the UI. Without a reader, an account whose unsent work was
+  /// just set aside opened Settings -> Unsent changes and read "Everything is
+  /// saved" — the one message that is certainly false in that moment.
+  bool get recoveredFromCorruption => _store.corruptDetected;
+
+  void _emit() =>
+      _onChanged(_doc, _inFlightOpId, _state, _store.corruptDetected);
 
   void _arm(Duration d) {
     if (_disposed) return;

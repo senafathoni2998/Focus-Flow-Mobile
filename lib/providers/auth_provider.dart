@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api_exception.dart';
@@ -10,6 +12,7 @@ import 'lists_provider.dart';
 import 'providers.dart';
 import 'tags_provider.dart';
 import 'tasks_provider.dart';
+import 'write_queue_provider.dart';
 
 enum AuthStatus { unknown, authenticated, unauthenticated }
 
@@ -112,6 +115,10 @@ class AuthController extends StateNotifier<AuthState> {
   void _scopeCache(String? userId) {
     _ref.read(responseCacheProvider).setScope(userId);
     _ref.read(servingCacheProvider.notifier).state = false;
+    // The write queue is scoped in the SAME place, and from the same stored id,
+    // so a queue built on a plane is readable the moment the app reopens — which
+    // is the only situation it exists for.
+    unawaited(_ref.read(queueFlusherProvider).setScope(userId));
   }
 
   Future<void> login(String email, String password) async {
@@ -136,13 +143,26 @@ class AuthController extends StateNotifier<AuthState> {
     state = AuthState(status: AuthStatus.authenticated, user: session.user);
   }
 
-  Future<void> logout() async {
+  /// Unsent writes that would be lost by signing out. The caller MUST show
+  /// these to the user before calling [logout] with `discardUnsent: true`.
+  int get unsentCount => _ref.read(unsentCountProvider);
+
+  Future<void> logout({bool discardUnsent = false}) async {
     // Guarded: a throw from secure storage used to abort sign-out silently,
     // leaving the user apparently logged in.
     try {
       await _ref.read(tokenStorageProvider).clearTokens();
     } catch (_) {
       // Best effort — sign out locally regardless.
+    }
+    // The write queue is RETAINED unless the user explicitly chose to drop it.
+    // It is their own unsent work, not the server's cached data, and the two
+    // must not share a retention policy: the file stays under this account's
+    // scope, unreadable by any other, and flushes when they sign back in.
+    if (discardUnsent) {
+      // Before unscoping, for the same reason the cache is: clearScope() is
+      // scope-aware, so dropping the scope first would strand the file on disk.
+      await _ref.read(queueFlusherProvider).discardAllForSignOut();
     }
     // Wipe the cache BEFORE unscoping: clear() is scope-aware, so dropping the
     // scope first would leave the files on disk for the next account to inherit.
@@ -155,6 +175,11 @@ class AuthController extends StateNotifier<AuthState> {
   /// Invoked by the API client when a token refresh fails mid-session.
   void onSessionExpired() {
     if (state.status != AuthStatus.unauthenticated) {
+      // PAUSE, never discard. This can fire while the app is backgrounded, so it
+      // is not a decision the user made — and we genuinely do not know whether
+      // the in-flight write committed. Its idempotency key is intact, so signing
+      // back in replays it and the server resolves it either way.
+      _ref.read(queueFlusherProvider).pauseForAuth();
       resetSession();
       state = const AuthState(status: AuthStatus.unauthenticated);
     }

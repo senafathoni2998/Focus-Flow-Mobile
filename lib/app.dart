@@ -8,6 +8,7 @@ import 'providers/auth_provider.dart';
 import 'providers/reminder_poller.dart';
 import 'providers/share_provider.dart';
 import 'providers/widget_provider.dart';
+import 'providers/write_queue_provider.dart';
 
 class FocusFlowApp extends StatelessWidget {
   const FocusFlowApp({super.key});
@@ -40,13 +41,16 @@ class AuthGate extends ConsumerWidget {
     // Mirrors the task list to the home-screen widget on the same events the
     // UI reacts to, so the two can never disagree.
     ref.watch(widgetSyncProvider);
+    // Built here so it exists before any screen can enqueue a write, and so a
+    // queue left over from a previous session starts draining at launch.
+    ref.watch(queueFlusherProvider);
 
     final status = ref.watch(authControllerProvider).status;
     switch (status) {
       case AuthStatus.unknown:
         return const _Splash();
       case AuthStatus.authenticated:
-        return const HomeShell();
+        return const QueueLifecycle(child: HomeShell());
       case AuthStatus.unauthenticated:
         return const LoginScreen();
     }

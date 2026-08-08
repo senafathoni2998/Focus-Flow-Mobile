@@ -16,4 +16,14 @@ class TaskList {
         color: asStringOrNull(j['color']),
         order: j['order'] == null ? null : asInt(j['order']),
       );
+
+  /// The inverse of [TaskList.fromJson], for the offline overlay — which folds
+  /// pending writes in JSON space so a create body can be projected with the
+  /// same field mapping the server response goes through.
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'name': name,
+        'color': color,
+        'order': order,
+      };
 }

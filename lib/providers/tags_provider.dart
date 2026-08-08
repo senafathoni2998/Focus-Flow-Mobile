@@ -38,6 +38,37 @@ class TagsController extends StateNotifier<AsyncValue<List<Tag>>> {
     state = AsyncValue.data(await _repo.list());
   }
 
+  /// Merge one delta-sync batch. Tags matter here because they are created as a
+  /// SIDE EFFECT of writing a task's `tags` list — so draining the queue can
+  /// mint tags the drawer has never seen, and the overlay only knows them by
+  /// name until the real rows arrive.
+  void applyServerDelta(
+    List<Map<String, dynamic>> rows,
+    Set<String> deletedIds, {
+    required bool full,
+  }) {
+    if (full) {
+      state = AsyncValue.data(rows.map(Tag.fromJson).toList());
+      return;
+    }
+    if (rows.isEmpty && deletedIds.isEmpty) return;
+
+    final list = [..._current];
+    for (final row in rows) {
+      final t = Tag.fromJson(row);
+      final i = list.indexWhere((x) => x.id == t.id);
+      if (i >= 0) {
+        list[i] = t;
+      } else {
+        list.add(t);
+      }
+    }
+    if (deletedIds.isNotEmpty) {
+      list.removeWhere((t) => deletedIds.contains(t.id));
+    }
+    state = AsyncValue.data(list);
+  }
+
   Future<void> delete(String id) async {
     await _repo.delete(id);
     state = AsyncValue.data(_current.where((t) => t.id != id).toList());

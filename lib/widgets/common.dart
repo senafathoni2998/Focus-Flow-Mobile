@@ -136,3 +136,13 @@ Future<bool> confirmDialog(
   );
   return result ?? false;
 }
+
+/// Said out loud whenever a write was queued rather than sent.
+///
+/// A screen that closes normally after a save reads as "it is on the server".
+/// When it is only on this phone, that difference matters — especially before
+/// the user closes the app, switches device, or wonders why the web app has not
+/// caught up.
+void showOfflineSaved(BuildContext context) {
+  showInfo(context, "Saved offline — will sync when you're back online");
+}

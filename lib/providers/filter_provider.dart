@@ -3,7 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../core/horizons.dart';
 import '../models/task.dart';
+import '../core/offline/list_overlay.dart';
+import '../core/offline/task_overlay.dart';
+import '../models/task_list.dart';
+import 'lists_provider.dart';
 import 'tasks_provider.dart';
+import 'write_queue_provider.dart';
 
 /// The current task-workspace selection: which smart list / list / tag, plus
 /// search, sort, and whether completed tasks are shown.
@@ -54,18 +59,58 @@ int _cmpNullableDate(DateTime? a, DateTime? b) {
   return a.compareTo(b);
 }
 
+/// Server truth with every pending write folded on top. EVERY task reader
+/// watches this, never `tasksControllerProvider` directly.
+///
+/// Dead ops are folded in too. Without that, a task the user typed offline whose
+/// create the server then rejected would vanish from the list the instant it was
+/// dead-lettered — they would watch their own typing disappear with no
+/// explanation. It stays, badged, until they decide what to do with it.
+final allTasksProvider = Provider<List<Task>>((ref) {
+  final server = ref.watch(tasksControllerProvider).value ?? const <Task>[];
+  final pending = ref.watch(pendingOpsProvider);
+  final dead = ref.watch(deadOpsProvider);
+  final idMap = ref.watch(queueIdMapProvider);
+  if (pending.isEmpty && dead.isEmpty) return server;
+  return applyQueue(server, [...pending, ...dead], idMap);
+});
+
+/// Server truth for lists with pending creates and deletes folded on top.
+/// Every list reader watches this, never `listsControllerProvider` directly.
+final allListsProvider = Provider<List<TaskList>>((ref) {
+  final server = ref.watch(listsControllerProvider).value ?? const <TaskList>[];
+  final pending = ref.watch(pendingOpsProvider);
+  final dead = ref.watch(deadOpsProvider);
+  final idMap = ref.watch(queueIdMapProvider);
+  if (pending.isEmpty && dead.isEmpty) return server;
+  return applyListQueue(server, [...pending, ...dead], idMap);
+});
+
+/// The selected list id, resolved through the queue's id map.
+///
+/// Selecting a list created offline stores its `local_` id in the filter. When
+/// the create lands, every task's `listId` becomes the SERVER id — so without
+/// this the comparison stopped matching and the view the user was looking at
+/// silently emptied, with a list still highlighted in the drawer.
+final selectedListIdProvider = Provider<String?>((ref) {
+  final id = ref.watch(taskFilterProvider).listId;
+  if (id == null || id == 'inbox') return id;
+  return ref.watch(queueIdMapProvider)[id] ?? id;
+});
+
 /// The filtered + sorted top-level tasks for the current selection.
 final visibleTasksProvider = Provider<List<Task>>((ref) {
-  final all = ref.watch(tasksControllerProvider).value ?? const [];
+  final all = ref.watch(allTasksProvider);
   final f = ref.watch(taskFilterProvider);
   final now = DateTime.now();
 
   var list = all.where((t) => t.parentTaskId == null).toList();
 
-  if (f.listId == 'inbox') {
+  final selectedList = ref.watch(selectedListIdProvider);
+  if (selectedList == 'inbox') {
     list = list.where((t) => t.listId == null).toList();
-  } else if (f.listId != null) {
-    list = list.where((t) => t.listId == f.listId).toList();
+  } else if (selectedList != null) {
+    list = list.where((t) => t.listId == selectedList).toList();
   }
 
   if (f.tagId != null) {
@@ -110,7 +155,7 @@ final visibleTasksProvider = Provider<List<Task>>((ref) {
 
 /// Subtasks grouped by their parent id (for progress badges + the editor).
 final subtasksByParentProvider = Provider<Map<String, List<Task>>>((ref) {
-  final all = ref.watch(tasksControllerProvider).value ?? const [];
+  final all = ref.watch(allTasksProvider);
   final map = <String, List<Task>>{};
   for (final t in all) {
     final p = t.parentTaskId;
@@ -121,7 +166,7 @@ final subtasksByParentProvider = Provider<Map<String, List<Task>>>((ref) {
 
 /// Open-task counts per smart-list horizon, for the drawer badges.
 final horizonCountsProvider = Provider<Map<String, int>>((ref) {
-  final all = ref.watch(tasksControllerProvider).value ?? const [];
+  final all = ref.watch(allTasksProvider);
   final now = DateTime.now();
   final open = all.where((t) => t.parentTaskId == null && !t.isTerminal).toList();
   final counts = <String, int>{};

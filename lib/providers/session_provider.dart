@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/session_repository.dart';
 import '../models/focus_session.dart';
 import 'dashboard_provider.dart';
+import '../core/offline/queue_flusher.dart';
+import '../core/offline/queue_op.dart';
 import 'providers.dart';
+import 'write_queue_provider.dart';
 import 'tasks_provider.dart';
 
 /// Planned lengths, in seconds — the same values the web PomodoroTimer uses.
@@ -91,7 +93,7 @@ class FocusController extends StateNotifier<FocusState> {
   FocusController(this._ref) : super(const FocusState());
 
   final Ref _ref;
-  SessionRepository get _repo => _ref.read(sessionRepositoryProvider);
+  QueueFlusher get _queue => _ref.read(queueFlusherProvider);
 
   Timer? _ticker;
   DateTime? _deadline;
@@ -113,23 +115,67 @@ class FocusController extends StateNotifier<FocusState> {
 
   Future<void> start() async {
     if (state.phase != FocusPhase.idle || state.busy) return;
-    state = state.copyWith(busy: true, clearError: true);
-    try {
-      final session = await _repo.start(
-        taskId: state.type == 'pomodoro' ? state.taskId : null,
+
+    // THE TIMER STARTS FIRST, before anything touches the network.
+    //
+    // It used to await the server, so with no signal the pomodoro simply did not
+    // begin. The timer is local and deadline-anchored anyway; making it wait on
+    // a round trip only meant a user on a plane could not focus at all.
+    final DateTime startedAt = DateTime.now();
+    final String localId = newLocalId();
+    final String? taskId = state.type == 'pomodoro' ? state.taskId : null;
+
+    _deadline = startedAt.add(Duration(seconds: state.plannedSeconds));
+    state = state.copyWith(
+      phase: FocusPhase.running,
+      session: FocusSession(
+        id: localId,
         type: state.type,
         duration: state.plannedSeconds,
-      );
-      _deadline = DateTime.now().add(Duration(seconds: state.plannedSeconds));
-      state = state.copyWith(
-        phase: FocusPhase.running,
-        session: session,
-        busy: false,
-        remaining: Duration(seconds: state.plannedSeconds),
-      );
-      _startTicker();
+        status: 'running',
+        startTime: startedAt,
+        taskId: taskId,
+      ),
+      busy: false,
+      clearError: true,
+      remaining: Duration(seconds: state.plannedSeconds),
+    );
+    _startTicker();
+
+    final Map<String, dynamic> body = <String, dynamic>{
+      if (taskId != null) 'taskId': taskId,
+      'type': state.type,
+      'duration': state.plannedSeconds,
+      // FROZEN AT ENQUEUE, and the reason this can be queued at all. The server
+      // used to stamp its own clock, so a flight's pomodoros all landed at the
+      // instant the wifi reconnected — hours of focus time on the wrong DAY in
+      // every chart. It clamps this to `<= now` and to 30 days back.
+      'startTime': startedAt.toUtc().toIso8601String(),
+    };
+
+    try {
+      await _queue.submit(QueuedOp(
+        id: newOpId(),
+        seq: 0,
+        kind: OpKind.createSession,
+        target: '',
+        assigns: localId,
+        // A session can be attributed to a task created in the same offline
+        // stretch, so its taskId may itself be a local id.
+        deps: <String>[
+          if (taskId != null && isLocalId(taskId)) taskId,
+        ],
+        body: body,
+        // Mandatory: POST /sessions is idempotency-wrapped, and creating a row
+        // is the one inherently non-idempotent act.
+        key: newIdempotencyKey(),
+        summary: summaryFor(OpKind.createSession, null, ''),
+        createdAtMs: startedAt.millisecondsSinceEpoch,
+      ));
     } catch (e) {
-      state = state.copyWith(busy: false, error: e.toString());
+      // The timer keeps running. The user's time is real whether or not we
+      // managed to record it, and stopping the clock would be the worse lie.
+      if (mounted) state = state.copyWith(error: e.toString());
     }
   }
 
@@ -161,7 +207,18 @@ class FocusController extends StateNotifier<FocusState> {
     );
     if (id == null) return;
     try {
-      await _repo.cancel(id);
+      await _queue.submit(QueuedOp(
+        id: newOpId(),
+        seq: 0,
+        kind: OpKind.cancelSession,
+        target: id,
+        deps: <String>[if (isLocalId(id)) id],
+        // No key: /sessions/:id/cancel does not opt into idempotency. Replaying
+        // it hits the "Session is not running" 409, which carries no Retry-After
+        // and is therefore terminal — not six wasted attempts.
+        summary: summaryFor(OpKind.cancelSession, null, ''),
+        createdAtMs: DateTime.now().millisecondsSinceEpoch,
+      ));
     } catch (_) {
       // The local timer is already stopped; a stale row is not worth blocking on.
     }
@@ -177,13 +234,24 @@ class FocusController extends StateNotifier<FocusState> {
     );
     if (id == null) return;
     try {
-      await _repo.complete(id);
+      final outcome = await _queue.submit(QueuedOp(
+        id: newOpId(),
+        seq: 0,
+        kind: OpKind.completeSession,
+        target: id,
+        deps: <String>[if (isLocalId(id)) id],
+        summary: summaryFor(OpKind.completeSession, null, ''),
+        createdAtMs: DateTime.now().millisecondsSinceEpoch,
+      ));
       // A finished pomodoro changes a task's actualMin and the dashboard's focus
-      // total, and neither derives from local state.
-      if (state.type == 'pomodoro') {
-        await _ref.read(tasksControllerProvider.notifier).refresh();
+      // total, and neither derives from local state. Only worth re-reading if it
+      // actually reached the server; a queued one is reconciled on drain.
+      if (outcome.outcome == SubmitOutcome.sent) {
+        if (state.type == 'pomodoro') {
+          await _ref.read(tasksControllerProvider.notifier).refresh();
+        }
+        await _ref.read(dashboardControllerProvider.notifier).refresh();
       }
-      await _ref.read(dashboardControllerProvider.notifier).refresh();
     } catch (e) {
       if (mounted) state = state.copyWith(error: e.toString());
     }

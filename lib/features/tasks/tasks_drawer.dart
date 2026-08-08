@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/offline/queue_flusher.dart';
+
 import '../../core/constants.dart';
 import '../../core/horizons.dart';
 import '../../core/saved_filter_query.dart';
@@ -20,7 +22,7 @@ class TasksDrawer extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     final filter = ref.watch(taskFilterProvider);
     final counts = ref.watch(horizonCountsProvider);
-    final lists = ref.watch(listsControllerProvider).value ?? const [];
+    final lists = ref.watch(allListsProvider);
     final tags = ref.watch(tagsControllerProvider).value ?? const [];
     final user = ref.watch(authControllerProvider).user;
 
@@ -84,7 +86,11 @@ class TasksDrawer extends ConsumerWidget {
                       message: 'Delete "${l.name}"? Its tasks move to the Inbox.');
                   if (!ok) return;
                   try {
-                    await ref.read(listsControllerProvider.notifier).delete(l.id);
+                    final outcome =
+                        await ref.read(listsControllerProvider.notifier).delete(l.id);
+                    if (outcome == SubmitOutcome.deferred && context.mounted) {
+                      showOfflineSaved(context);
+                    }
                     if (filter.listId == l.id) {
                       ref.read(taskFilterProvider.notifier).state = const TaskFilter();
                     }
@@ -219,7 +225,8 @@ class TasksDrawer extends ConsumerWidget {
     );
     if (name == null || name.isEmpty) return;
     try {
-      await ref.read(listsControllerProvider.notifier).create(name);
+      final outcome = await ref.read(listsControllerProvider.notifier).create(name);
+      if (outcome == SubmitOutcome.deferred && context.mounted) showOfflineSaved(context);
     } catch (e) {
       if (context.mounted) showError(context, e);
     }

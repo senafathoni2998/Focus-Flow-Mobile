@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../models/task.dart';
 import '../../providers/session_provider.dart';
-import '../../providers/tasks_provider.dart';
+import '../../providers/filter_provider.dart';
 
 /// Pomodoro timer.
 ///
@@ -24,7 +23,9 @@ class FocusScreen extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     final s = ref.watch(focusControllerProvider);
     final ctrl = ref.read(focusControllerProvider.notifier);
-    final tasks = ref.watch(tasksControllerProvider).value ?? const <Task>[];
+    // The overlay, not the raw controller: a task created while offline must be
+    // selectable as the thing you are focusing on.
+    final tasks = ref.watch(allTasksProvider);
     final openTasks = tasks
         .where((t) => t.status != 'completed' && t.status != 'wont-do' && t.parentTaskId == null)
         .toList();

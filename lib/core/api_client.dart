@@ -25,6 +25,7 @@ class ApiClient {
     this.onSessionExpired,
     this.cache,
     this.onServingCache,
+    this.onNetworkOk,
   }) {
     final options = BaseOptions(
       baseUrl: apiBase,
@@ -101,6 +102,16 @@ class ApiClient {
   /// Told true when a response came from disk instead of the server, and false
   /// as soon as a live one succeeds — so the UI can say which it is showing.
   final void Function(bool servingCache)? onServingCache;
+
+  /// Fired on every 2xx from any verb.
+  ///
+  /// The offline write queue uses it as a free connectivity signal: the moment
+  /// anything reaches the server, there is a network again and the queue can
+  /// drain. That is why no connectivity package is needed — link state would
+  /// report "connected" behind a captive portal or against a LAN backend that
+  /// is down, which is exactly the case this app hits.
+  final void Function()? onNetworkOk;
+
   late final Dio _dio;
   late final Dio _bare;
   /// Single-flight guard: concurrent 401s share one refresh instead of racing.
@@ -170,11 +181,18 @@ class ApiClient {
   /// 200 carrying a String. That fell through `asMap` -> `{}` -> `asMapList` ->
   /// `[]`, and every list screen rendered its "nothing here" empty state with no
   /// error and no retry — indistinguishable from genuinely having no data.
-  dynamic _requireJson(dynamic data) {
+  ///
+  /// The status is carried through deliberately. This used to throw with
+  /// `statusCode: null`, which the write queue would read as "no answer at all"
+  /// — a transport failure, which by design consumes no retry budget. It would
+  /// therefore have retried forever a request that had in fact SUCCEEDED.
+  dynamic _requireJson(dynamic data, int? status) {
     if (data == null || data is Map || data is List) return data;
     throw ApiException(
       'The server returned an unexpected (non-JSON) response. Check the server '
       'URL in Settings — it should point at the FocusFlow backend root.',
+      statusCode: status,
+      hadResponse: true,
     );
   }
 
@@ -191,10 +209,11 @@ class ApiClient {
     final key = _cacheKey(path, query);
     try {
       final r = await _dio.get<dynamic>(path, queryParameters: query);
-      final data = _requireJson(r.data);
+      final data = _requireJson(r.data, r.statusCode);
       // Only successful, well-formed responses are worth keeping.
       unawaited(cache?.write(key, data) ?? Future.value());
       onServingCache?.call(false);
+      onNetworkOk?.call();
       return data;
     } on DioException catch (e) {
       // Fall back to disk ONLY for transport failures. A 4xx is the server
@@ -221,14 +240,25 @@ class ApiClient {
         e.type == DioExceptionType.unknown;
   }
 
-  Future<dynamic> postJson(String path, {Object? body, bool skipAuth = false}) async {
+  Future<dynamic> postJson(
+    String path, {
+    Object? body,
+    bool skipAuth = false,
+    String? idempotencyKey,
+  }) async {
     try {
       final r = await _dio.post<dynamic>(
         path,
         data: body,
-        options: skipAuth ? Options(extra: {'skipAuth': true}) : null,
+        options: Options(
+          extra: skipAuth ? {'skipAuth': true} : null,
+          headers: idempotencyKey == null
+              ? null
+              : {_idempotencyHeader: idempotencyKey},
+        ),
       );
-      return _requireJson(r.data);
+      onNetworkOk?.call();
+      return _requireJson(r.data, r.statusCode);
     } on DioException catch (e) {
       throw ApiException.fromDio(e);
     }
@@ -237,7 +267,8 @@ class ApiClient {
   Future<dynamic> patchJson(String path, {Object? body}) async {
     try {
       final r = await _dio.patch<dynamic>(path, data: body);
-      return _requireJson(r.data);
+      onNetworkOk?.call();
+      return _requireJson(r.data, r.statusCode);
     } on DioException catch (e) {
       throw ApiException.fromDio(e);
     }
@@ -246,7 +277,41 @@ class ApiClient {
   Future<dynamic> deleteJson(String path, {Object? body}) async {
     try {
       final r = await _dio.delete<dynamic>(path, data: body);
-      return _requireJson(r.data);
+      onNetworkOk?.call();
+      return _requireJson(r.data, r.statusCode);
+    } on DioException catch (e) {
+      throw ApiException.fromDio(e);
+    }
+  }
+
+  static const String _idempotencyHeader = 'Idempotency-Key';
+
+  /// Send one queued write exactly as the queue described it.
+  ///
+  /// Deliberately verb-agnostic: the queue stores a method and a path, and this
+  /// replays them without knowing what the operation means. Anything that
+  /// interpreted the op here would be a second place the queue's semantics live.
+  /// Returns the real status alongside the body — the queue classifies on the
+  /// status, so collapsing 201 and 200 here would hide information it needs.
+  Future<({int? status, dynamic data})> sendQueued({
+    required String method,
+    required String path,
+    Map<String, dynamic>? body,
+    String? idempotencyKey,
+  }) async {
+    try {
+      final r = await _dio.request<dynamic>(
+        path,
+        data: body,
+        options: Options(
+          method: method,
+          headers: idempotencyKey == null
+              ? null
+              : {_idempotencyHeader: idempotencyKey},
+        ),
+      );
+      onNetworkOk?.call();
+      return (status: r.statusCode, data: _requireJson(r.data, r.statusCode));
     } on DioException catch (e) {
       throw ApiException.fromDio(e);
     }

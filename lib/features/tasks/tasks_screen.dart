@@ -4,9 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/horizons.dart';
 import '../../models/task.dart';
 import '../../providers/filter_provider.dart';
-import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
+import '../../core/offline/queue_flusher.dart';
 import '../../providers/tasks_provider.dart';
+import '../../providers/write_queue_provider.dart';
 import '../../widgets/common.dart';
 import '../focus/focus_screen.dart';
 import 'calendar_view.dart';
@@ -47,7 +48,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
     }
     if (f.listId == 'inbox') return 'Inbox';
     if (f.listId != null) {
-      final lists = ref.watch(listsControllerProvider).value ?? const [];
+      final lists = ref.watch(allListsProvider);
       for (final l in lists) {
         if (l.id == f.listId) return l.name;
       }
@@ -63,10 +64,19 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
     final ctrl = ref.read(tasksControllerProvider.notifier);
     try {
       if (t.isTerminal) {
-        await ctrl.update(t.id, {'status': 'todo'});
+        final outcome = await ctrl.update(t.id, {'status': 'todo'});
+        if (outcome == SubmitOutcome.deferred && mounted) showOfflineSaved(context);
       } else {
-        final recurred = await ctrl.complete(t.id);
-        if (recurred && mounted) showInfo(context, 'Recurring task moved to its next date');
+        final res = await ctrl.complete(t.id);
+        if (!mounted) return;
+        if (res.recurred) {
+          showInfo(context, 'Recurring task moved to its next date');
+        } else if (res.outcome == SubmitOutcome.deferred) {
+          // Deliberately not claiming it recurred: the next occurrence is
+          // computed server-side from the rule's anchor and count, so offline we
+          // genuinely do not know it yet.
+          showOfflineSaved(context);
+        }
       }
     } catch (e) {
       if (mounted) showError(context, e);
@@ -75,8 +85,13 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
 
   Future<void> _delete(Task t) async {
     try {
-      await ref.read(tasksControllerProvider.notifier).delete(t.id);
-      if (mounted) showInfo(context, 'Task deleted');
+      final outcome = await ref.read(tasksControllerProvider.notifier).delete(t.id);
+      if (!mounted) return;
+      showInfo(
+          context,
+          outcome == SubmitOutcome.deferred
+              ? 'Deleted — will sync when you\'re back online'
+              : 'Task deleted');
     } catch (e) {
       if (mounted) showError(context, e);
     }
@@ -97,6 +112,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
     final async = ref.watch(tasksControllerProvider);
     final filter = ref.watch(taskFilterProvider);
     final subtasksByParent = ref.watch(subtasksByParentProvider);
+    final pendingStates = ref.watch(taskPendingStateProvider);
 
     return Scaffold(
       drawer: const TasksDrawer(),
@@ -250,6 +266,7 @@ class _TasksScreenState extends ConsumerState<TasksScreen> {
                         ),
                         onDismissed: (_) => _delete(t),
                         child: TaskCard(
+                          pending: pendingStates[t.id],
                           task: t,
                           subtaskDone: done,
                           subtaskTotal: subs.length,

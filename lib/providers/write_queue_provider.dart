@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,8 +7,10 @@ import '../core/offline/queue_flusher.dart';
 import '../core/offline/queue_op.dart';
 import '../core/offline/task_overlay.dart';
 import '../core/offline/write_queue_store.dart';
+import '../data/sync_repository.dart';
 import 'providers.dart';
 import 'lists_provider.dart';
+import 'tags_provider.dart';
 import 'tasks_provider.dart';
 
 /// Riverpod wiring for the offline write queue.
@@ -63,23 +67,60 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
     onDrained: (Set<OpEntity> touched) {
       // Everything the queue guessed at locally — order, tag ids, a recurring
       // task's next date, a list's server id — is only knowable from the server,
-      // so reconcile once the queue is empty rather than after each op. Only the
-      // entities that actually changed: refreshing all of them every time would
-      // be several requests where one is needed.
-      if (touched.contains(OpEntity.task)) {
-        ref.read(tasksControllerProvider.notifier).refresh();
-      }
-      if (touched.contains(OpEntity.list)) {
-        // A list DELETE re-parents its tasks to the Inbox through a database
-        // cascade the service never mentions, so tasks are stale too.
-        ref.read(listsControllerProvider.notifier).refresh();
-        ref.read(tasksControllerProvider.notifier).refresh();
-      }
+      // so reconcile once the queue is empty rather than after each op.
+      //
+      // ONE delta request, not a full GET per entity. A drain can change more
+      // than it wrote: deleting a list re-parents every task in it to the Inbox
+      // through a database cascade the service never mentions, and creating a
+      // task can mint tags the drawer has never seen. Asking "what changed since
+      // the cursor" covers all of that in a single round trip and returns the
+      // deletions too, which no list endpoint can express.
+      unawaited(_reconcileAfterDrain(ref, touched));
     },
   );
   ref.onDispose(flusher.dispose);
   return flusher;
 });
+
+/// Pull everything that changed while the queue was draining.
+///
+/// Falls back to the old per-entity refreshes if the delta fails, because a
+/// failed reconcile must not leave the screen showing values the queue only
+/// guessed at — a stale full refresh is better than a confident wrong one.
+Future<void> _reconcileAfterDrain(Ref ref, Set<OpEntity> touched) async {
+  final QueueFlusher flusher = ref.read(queueFlusherProvider);
+  try {
+    final SyncDelta delta =
+        await ref.read(syncRepositoryProvider).since(flusher.syncCursor);
+
+    Set<String> deletedOf(String type) => delta.deleted
+        .where((({String id, String type}) d) => d.type == type)
+        .map((({String id, String type}) d) => d.id)
+        .toSet();
+
+    ref.read(tasksControllerProvider.notifier).applyServerDelta(
+        delta.tasks, deletedOf('task'),
+        full: delta.full);
+    ref.read(listsControllerProvider.notifier).applyServerDelta(
+        delta.lists, deletedOf('list'),
+        full: delta.full);
+    ref.read(tagsControllerProvider.notifier).applyServerDelta(
+        delta.tags, deletedOf('tag'),
+        full: delta.full);
+
+    // Only now. Advancing first and then failing to apply would skip these
+    // changes for good, since the next request asks for everything since a
+    // point we never processed.
+    await flusher.advanceSyncCursor(delta.serverTime);
+  } catch (_) {
+    if (touched.contains(OpEntity.task) || touched.contains(OpEntity.list)) {
+      unawaited(ref.read(tasksControllerProvider.notifier).refresh());
+    }
+    if (touched.contains(OpEntity.list)) {
+      unawaited(ref.read(listsControllerProvider.notifier).refresh());
+    }
+  }
+}
 
 /// Pending + failed. What the Settings row and the app-bar badge count.
 final unsentCountProvider = Provider<int>((ref) =>

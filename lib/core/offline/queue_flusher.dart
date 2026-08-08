@@ -147,6 +147,20 @@ class QueueFlusher {
   int get deadCount => _doc.dead.length;
   String? get inFlightOpId => _inFlightOpId;
 
+  /// The delta-sync cursor for the account currently in scope.
+  String? get syncCursor => _doc.syncCursor;
+
+  /// Advance the cursor, AFTER the delta it came from has been applied.
+  ///
+  /// Order matters and only one direction is safe: storing it first and then
+  /// failing to apply would skip those changes permanently, because the next
+  /// request would ask for everything since a point we never processed.
+  /// Re-applying a delta is free — every merge is an upsert by id.
+  Future<void> advanceSyncCursor(String serverTime) async {
+    if (_store.scope == null || serverTime.isEmpty) return;
+    await _commit(_doc.copyWith(syncCursor: serverTime));
+  }
+
   /// Point at an account and load its queue. Passing null (signed out) leaves
   /// the file untouched — the queue is the user's own unsent work, not the
   /// server's cached data, and the two must not share a retention policy.

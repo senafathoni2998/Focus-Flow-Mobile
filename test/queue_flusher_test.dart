@@ -691,6 +691,29 @@ void main() {
     expect(flusher.doc.ops.single.pendingAttempts, 0);
   });
 
+  group('the sync cursor', () {
+    test('is only advanced when asked, and survives a restart', () async {
+      flusher = build(<TransportResult>[ok()]);
+      await flusher.setScope('u1');
+      expect(flusher.syncCursor, isNull);
+
+      await flusher.advanceSyncCursor('2026-08-05T10:00:00.000Z');
+      expect(flusher.syncCursor, '2026-08-05T10:00:00.000Z');
+
+      await flusher.setScope(null);
+      await flusher.setScope('u1');
+      await settle();
+      expect(flusher.syncCursor, '2026-08-05T10:00:00.000Z');
+    });
+
+    test('is a no-op while signed out, so it cannot leak between accounts', () async {
+      flusher = build(<TransportResult>[ok()]);
+      await flusher.setScope(null);
+      await flusher.advanceSyncCursor('2026-08-05T10:00:00.000Z');
+      expect(flusher.syncCursor, isNull);
+    });
+  });
+
   test('a signed-out flusher holds nothing in memory', () async {
     flusher = build(<TransportResult>[offline()]);
     await flusher.submit(mkOp('a', assigns: 'local_a'));

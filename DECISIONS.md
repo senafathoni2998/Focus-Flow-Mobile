@@ -152,6 +152,15 @@ Supporting rules, each preventing something specific:
   session that is not running. Retrying those burned the whole pending budget and then
   dead-lettered them as "we couldn't confirm this was saved", behind a Retry button that could
   never work.
+- **A drained queue reconciles with ONE delta request, not a full GET per entity.**
+  `GET /api/v1/sync?since=` also returns the deletions, which no list endpoint can
+  express, and covers what a drain changes INDIRECTLY: deleting a list re-parents its
+  tasks to the Inbox through a database cascade, and creating a task mints tags as a
+  side effect. The cursor is a SERVER timestamp stored in the queue document — same
+  file, so the same per-account scoping rather than a second mechanism to get wrong —
+  and it is advanced only AFTER the delta has been applied, because storing it first
+  and then failing would skip those changes permanently. A failed delta falls back to
+  the old per-entity refreshes.
 - **The on-disk format version is bumped whenever an `OpKind` is added.** Reading forward is
   safe; reading BACKWARD is not, because an older build hits the tolerant "drop one unreadable
   row" path and silently discards the user's work. An unknown version makes it set the whole

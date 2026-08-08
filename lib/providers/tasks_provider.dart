@@ -73,6 +73,43 @@ class TasksController extends StateNotifier<AsyncValue<List<Task>>> {
     state = AsyncValue.data(list);
   }
 
+  /// Merge one delta-sync batch into server truth.
+  ///
+  /// `full` means the server sent everything (no cursor), so the list is
+  /// REPLACED; otherwise rows are upserted by id and the tombstoned ones
+  /// removed. Either way this writes the layer UNDER the overlay, so a pending
+  /// write cannot be erased by it.
+  void applyServerDelta(
+    List<Map<String, dynamic>> rows,
+    Set<String> deletedIds, {
+    required bool full,
+  }) {
+    if (full) {
+      _gen++;
+      state = AsyncValue.data(rows.map(Task.fromJson).toList());
+      return;
+    }
+    if (rows.isEmpty && deletedIds.isEmpty) return;
+
+    final List<Task> list = <Task>[..._current];
+    for (final Map<String, dynamic> row in rows) {
+      final Task t = Task.fromJson(row);
+      final int i = list.indexWhere((Task x) => x.id == t.id);
+      if (i >= 0) {
+        list[i] = t;
+      } else {
+        list.add(t);
+      }
+    }
+    if (deletedIds.isNotEmpty) {
+      list.removeWhere((Task t) =>
+          deletedIds.contains(t.id) ||
+          (t.parentTaskId != null && deletedIds.contains(t.parentTaskId)));
+    }
+    _gen++;
+    state = AsyncValue.data(list);
+  }
+
   String _titleOf(String id) {
     for (final Task t in _current) {
       if (t.id == id) return t.title;

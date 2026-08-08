@@ -76,6 +76,37 @@ class ListsController extends StateNotifier<AsyncValue<List<TaskList>>> {
     state = AsyncValue.data(list);
   }
 
+  /// Merge one delta-sync batch into server truth. See the note on the task
+  /// equivalent — same rules, same reason it sits under the overlay.
+  void applyServerDelta(
+    List<Map<String, dynamic>> rows,
+    Set<String> deletedIds, {
+    required bool full,
+  }) {
+    if (full) {
+      _gen++;
+      state = AsyncValue.data(rows.map(TaskList.fromJson).toList());
+      return;
+    }
+    if (rows.isEmpty && deletedIds.isEmpty) return;
+
+    final list = [..._current];
+    for (final row in rows) {
+      final l = TaskList.fromJson(row);
+      final i = list.indexWhere((x) => x.id == l.id);
+      if (i >= 0) {
+        list[i] = l;
+      } else {
+        list.add(l);
+      }
+    }
+    if (deletedIds.isNotEmpty) {
+      list.removeWhere((l) => deletedIds.contains(l.id));
+    }
+    _gen++;
+    state = AsyncValue.data(list);
+  }
+
   String _nameOf(String id) {
     for (final l in _current) {
       if (l.id == id) return l.name;

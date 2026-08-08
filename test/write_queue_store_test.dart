@@ -232,6 +232,33 @@ void main() {
     expect((await store.load()).ops.single.id, 'op_3');
   });
 
+  test('the sync cursor rides in the same document, per account', () async {
+    // It shares this file rather than getting its own because this one is
+    // already scoped per account, written atomically, and wiped by the same
+    // rules. A second store would be a second scoping mechanism to get wrong.
+    store.setScope('u1');
+    await store.save(const QueueDoc(syncCursor: '2026-08-05T10:00:00.000Z'));
+    store.setScope('u2');
+    expect((await store.load()).syncCursor, isNull);
+
+    store.setScope('u1');
+    expect((await store.load()).syncCursor, '2026-08-05T10:00:00.000Z');
+  });
+
+  test('an older document without a cursor loads as never-synced', () async {
+    store.setScope('u1');
+    await fileFor('u1').writeAsString(jsonEncode(<String, dynamic>{
+      'version': 2,
+      'seq': 0,
+      'ops': <dynamic>[],
+      'idMap': <String, String>{},
+      'dead': <dynamic>[],
+    }));
+    final QueueDoc doc = await store.load();
+    expect(doc.syncCursor, isNull);
+    expect(store.corruptDetected, isFalse);
+  });
+
   test('an absent file is an empty queue, not an error', () async {
     store.setScope('u1');
     expect((await store.load()).isEmpty, isTrue);

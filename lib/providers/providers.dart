@@ -13,6 +13,7 @@ import '../data/reminder_repository.dart';
 import '../data/chat_repository.dart';
 import '../data/saved_filter_repository.dart';
 import '../data/session_repository.dart';
+import '../data/sync_repository.dart';
 import '../data/tag_repository.dart';
 import '../data/task_repository.dart';
 import 'auth_provider.dart';
@@ -69,3 +70,4 @@ final analyticsRepositoryProvider = Provider((ref) => AnalyticsRepository(ref.wa
 final sessionRepositoryProvider = Provider((ref) => SessionRepository(ref.watch(apiClientProvider)));
 final savedFilterRepositoryProvider = Provider((ref) => SavedFilterRepository(ref.watch(apiClientProvider)));
 final chatRepositoryProvider = Provider((ref) => ChatRepository(ref.watch(apiClientProvider)));
+final syncRepositoryProvider = Provider((ref) => SyncRepository(ref.watch(apiClientProvider)));

@@ -403,6 +403,31 @@ void main() {
     expect(op(kind: OpKind.deleteTask).method, 'DELETE');
   });
 
+  group('the optimistic-concurrency precondition', () {
+    test('is stripped, leaving the rest of the body byte-identical', () {
+      final Map<String, dynamic> body = <String, dynamic>{
+        'title': 'edited on a plane',
+        'priority': 'high',
+        kPreconditionKey: '2026-08-05T10:00:00.000Z',
+        'tags': <String>['work'],
+      };
+      final Map<String, dynamic>? out = withoutPrecondition(body);
+
+      expect(out!.containsKey(kPreconditionKey), isFalse);
+      expect(out['title'], 'edited on a plane');
+      expect(out['priority'], 'high');
+      expect(out['tags'], <String>['work']);
+      // The original is untouched — the caller may still need it.
+      expect(body.containsKey(kPreconditionKey), isTrue);
+    });
+
+    test('a body without one is returned as-is', () {
+      final Map<String, dynamic> body = <String, dynamic>{'title': 'x'};
+      expect(identical(withoutPrecondition(body), body), isTrue);
+      expect(withoutPrecondition(null), isNull);
+    });
+  });
+
   test('summaries name the task so a dead letter is readable', () {
     expect(summaryFor(OpKind.createTask, <String, dynamic>{'title': 'Buy milk'}, ''),
         'New task "Buy milk"');

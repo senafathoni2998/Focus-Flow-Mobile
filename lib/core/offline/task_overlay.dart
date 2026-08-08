@@ -241,6 +241,9 @@ List<Task> applyQueue(
 
       case OpKind.createList:
       case OpKind.deleteList:
+      case OpKind.createSession:
+      case OpKind.completeSession:
+      case OpKind.cancelSession:
         // Filtered out above; listed so a new entity cannot be added without
         // the compiler asking what this overlay should do about it.
         break;

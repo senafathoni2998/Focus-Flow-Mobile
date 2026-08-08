@@ -79,6 +79,9 @@ List<TaskList> applyListQueue(
       case OpKind.updateTask:
       case OpKind.completeTask:
       case OpKind.deleteTask:
+      case OpKind.createSession:
+      case OpKind.completeSession:
+      case OpKind.cancelSession:
         // Filtered out above; enumerated so a new entity cannot be added
         // without the compiler asking what this overlay should do about it.
         break;

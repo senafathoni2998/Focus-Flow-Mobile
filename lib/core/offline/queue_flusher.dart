@@ -636,6 +636,7 @@ class QueueFlusher {
     final String envelope = switch (op.entity) {
       OpEntity.task => 'task',
       OpEntity.list => 'list',
+      OpEntity.session => 'session',
     };
     final Object? row = res.body?[envelope];
     if (row is Map) _onServerRow(op.entity, Map<String, dynamic>.from(row));
@@ -761,7 +762,10 @@ class QueueFlusher {
       target: dead.target,
       assigns: dead.assigns,
       deps: dead.deps,
-      body: dead.body,
+      // A 409 here is "somebody else changed this row after you edited it", and
+      // the version this edit named will never be current again. Retrying with
+      // it would conflict forever, so Retry means "send it anyway".
+      body: dead.errorStatus == 409 ? withoutPrecondition(dead.body) : dead.body,
       key: dead.errorStatus == 422 && dead.key != null
           ? newIdempotencyKey()
           : dead.key,

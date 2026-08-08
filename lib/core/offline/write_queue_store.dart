@@ -29,7 +29,8 @@ import 'queue_op.dart';
 /// aside instead, where it is still recoverable.
 ///   v1 — task create/update/complete/delete
 ///   v2 — list create/delete
-const int kQueueFormatVersion = 2;
+///   v3 — focus session create/complete/cancel
+const int kQueueFormatVersion = 3;
 
 class QueueDoc {
   const QueueDoc({

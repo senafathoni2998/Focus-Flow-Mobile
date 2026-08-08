@@ -9,7 +9,9 @@ import '../core/offline/task_overlay.dart';
 import '../core/offline/write_queue_store.dart';
 import '../data/sync_repository.dart';
 import 'providers.dart';
+import 'dashboard_provider.dart';
 import 'lists_provider.dart';
+import 'session_provider.dart';
 import 'tags_provider.dart';
 import 'tasks_provider.dart';
 
@@ -62,6 +64,12 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
           ref.read(tasksControllerProvider.notifier).upsertFromServer(row);
         case OpEntity.list:
           ref.read(listsControllerProvider.notifier).upsertFromServer(row);
+        case OpEntity.session:
+          // Nothing to fold. The focus timer runs off local state and its
+          // complete/cancel ops reference the session by its LOCAL id, which the
+          // queue resolves from the id map — so the server id is never needed on
+          // screen. The 7-day summary is refreshed on drain instead.
+          break;
       }
     },
     onDrained: (Set<OpEntity> touched) {
@@ -107,6 +115,14 @@ Future<void> _reconcileAfterDrain(Ref ref, Set<OpEntity> touched) async {
     ref.read(tagsControllerProvider.notifier).applyServerDelta(
         delta.tags, deletedOf('tag'),
         full: delta.full);
+
+    if (touched.contains(OpEntity.session)) {
+      // A completed pomodoro changes a task's actualMin and the dashboard's
+      // focus total, and neither is derived from anything the delta carries —
+      // both are computed server-side from the session rows.
+      ref.invalidate(recentSessionsProvider);
+      unawaited(ref.read(dashboardControllerProvider.notifier).refresh());
+    }
 
     // Only now. Advancing first and then failing to apply would skip these
     // changes for good, since the next request asks for everything since a

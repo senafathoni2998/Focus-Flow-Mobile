@@ -69,6 +69,7 @@ class Task {
     this.tags = const [],
     this.recurrence,
     this.reminders = const [],
+    this.updatedAt,
   });
 
   final String id;
@@ -91,6 +92,13 @@ class Task {
   final List<Tag> tags;
   final RecurrenceSummary? recurrence;
   final List<ReminderSummary> reminders;
+
+  /// When the server last wrote this row.
+  ///
+  /// Sent back with a QUEUED edit as `expectedUpdatedAt`, so the server can
+  /// refuse one that was based on a version somebody else has since replaced.
+  /// Online that race is about a second wide; a queued PATCH can sit for 14 days.
+  final DateTime? updatedAt;
 
   bool get isCompleted => status == 'completed';
   bool get isTerminal => status == 'completed' || status == 'wont-do';
@@ -120,6 +128,7 @@ class Task {
             ? RecurrenceSummary.fromJson(asMap(j['recurrence']))
             : null,
         reminders: asMapList(j['reminders']).map(ReminderSummary.fromJson).toList(),
+        updatedAt: Dates.parse(j['updatedAt']),
       );
 
   /// The inverse of [Task.fromJson], field for field.
@@ -152,5 +161,6 @@ class Task {
         'tags': tags.map((Tag t) => t.toJson()).toList(),
         'recurrence': recurrence?.toJson(),
         'reminders': reminders.map((ReminderSummary r) => r.toJson()).toList(),
+        'updatedAt': updatedAt?.toIso8601String(),
       };
 }

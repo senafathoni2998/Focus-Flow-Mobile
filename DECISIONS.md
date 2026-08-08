@@ -116,7 +116,7 @@ This list is a set of decisions, not a to-do list. Read the reason before "finis
 | Operation | Verdict | Why |
 |---|---|---|
 | `POST /tasks` | **queued** | The only write carrying content the user cannot reconstruct. Idempotency-wrapped, and the key is mandatory: creating a row is the one inherently non-idempotent act. |
-| `PATCH /tasks/:id` | **queued** | No idempotency support and none needed. Every field is an absolute assignment, tags and reminders are full replacements, and `completedAt` is `existing ?? now` — replaying the same body converges. |
+| `PATCH /tasks/:id` | **queued** | No idempotency support and none needed. Every field is an absolute assignment, tags and reminders are full replacements, and `completedAt` is `existing ?? now` — replaying the same body converges. It now also carries `expectedUpdatedAt`, the version the edit was based on: online the read-to-save gap is about a second and last-wins is invisible, but a queued edit can sit for 14 days and silently overwrite what was done from the web in between. The server answers 409 (no `Retry-After`, so terminal) and **Retry drops the precondition** — the version it names will never be current again, so "Try again" can only honestly mean "send it anyway". The UI says that before the user taps. |
 | `POST /tasks/:id/complete` | **queued** | Key MANDATORY. For a recurring task the server rolls the row forward and increments `completedCount`, so a bare retry skips an occurrence the user never did. |
 | `DELETE /tasks/:id` | **queued** | No key needed: the queue treats 404 as success. Ids are server cuids and never reused, so a 404 can only mean "already deleted". |
 | `POST /tasks/reorder` | online-only | `newOrder` is an absolute position computed against a list the queue is about to change (`createTask` assigns `max(order)+10` server-side, invisible offline). It also has no caller anywhere in `lib/`, so refusing costs zero UX. |
@@ -125,7 +125,7 @@ This list is a set of decisions, not a to-do list. Read the reason before "finis
 | `DELETE /lists/:id` | **queued** | No key needed; 404 counts as success for any delete. Note the blast radius: `onDelete: SetNull` at the DATABASE level re-parents every task in that list to the Inbox. That cascade appears nowhere in `listService.ts`, so anyone reading the service alone will miss it — which is why draining a list op refreshes tasks too. |
 | `PATCH /lists/:id` | online-only | Not a contract objection: the wire is the safest of the lot, two absolute scalar assignments. `ListsController.update` simply has **no caller anywhere in the app**. Queueing it would build an offline path for something the UI cannot do online either. |
 | Create/edit/delete goal, habit, tag, saved filter | online-only (later) | Each needs its own overlay, seam and `toJson` before it is safe, and each has a specific trap: goal create/PATCH return raw rows with no `progress` (folding one in shows 0%), habit ones return no `stats` (folding one blanks the streak), and tags have no POST at all — a tag is created as a side effect of writing a task's `tags` list, so tag creation is ALREADY covered and needs no op kind. A queued tag delete additionally fights any queued task write naming that tag, and the tag always wins. |
-| `POST /sessions` and friends | online-only, **blocked on the server** | `startSchema` has no `startTime` and `startSession` stamps `new Date()`. A flight's pomodoros would all land at the instant the wifi connected, putting hours of focus time on the wrong day in every analytics chart. Unblocking is a one-line server change (accept an optional client `startTime`, clamped to `<= now`). |
+| `POST /sessions`, `/sessions/:id/complete`, `/sessions/:id/cancel` | **queued** | Unblocked: the server now accepts an optional client `startTime`, clamped forward to `now` and backward to 30 days. The instant is FROZEN at enqueue — without it a flight's pomodoros all landed when the wifi reconnected, putting hours of focus time on the wrong DAY in every chart. The create carries a key (the route is wrapped); complete and cancel do not, and their replay hits a bare 409 "Session is not running" which has no `Retry-After` and is therefore terminal rather than six wasted attempts. **The timer starts before anything touches the network** — it is local and deadline-anchored, so making it wait on a round trip only meant a user with no signal could not focus at all. |
 | `POST /chat` | online-only | The response IS the request's purpose. |
 | `POST /reminders/dispatch` | online-only | A server-side "I showed this" marker whose read half needs the network anyway. |
 | Anything under `/auth` | **never** | Hard rule: nothing carrying credentials is written to the queue file, which is plaintext in the documents directory. |
@@ -161,6 +161,10 @@ Supporting rules, each preventing something specific:
   and it is advanced only AFTER the delta has been applied, because storing it first
   and then failing would skip those changes permanently. A failed delta falls back to
   the old per-entity refreshes.
+- **`taskId` joins `parentTaskId` and `listId` in `kIdBearingBodyKeys`.** A pomodoro can be
+  attributed to a task created in the same offline stretch, so its body can carry a local task
+  id — the third cross-entity reference, and the same rule applies: substitute at dispatch AND
+  block until resolved, because substitution alone would let it be sent too early.
 - **The on-disk format version is bumped whenever an `OpKind` is added.** Reading forward is
   safe; reading BACKWARD is not, because an older build hits the tolerant "drop one unreadable
   row" path and silently discards the user's work. An unknown version makes it set the whole

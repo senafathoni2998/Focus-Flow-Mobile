@@ -18,7 +18,7 @@ import 'dart:math';
 
 /// Which entity an op acts on. Derived from [OpKind] rather than stored, so the
 /// two can never disagree on disk.
-enum OpEntity { task, list }
+enum OpEntity { task, list, session }
 
 /// Every queued write. Everything NOT here is online-only on purpose; see
 /// DECISIONS.md F7 for the per-operation refusals and the reason for each.
@@ -34,6 +34,9 @@ enum OpKind {
   deleteTask,
   createList,
   deleteList,
+  createSession,
+  completeSession,
+  cancelSession,
 }
 
 /// What the flusher decided about one send.
@@ -219,6 +222,10 @@ class QueuedOp {
         OpKind.deleteTask =>
           OpEntity.task,
         OpKind.createList || OpKind.deleteList => OpEntity.list,
+        OpKind.createSession ||
+        OpKind.completeSession ||
+        OpKind.cancelSession =>
+          OpEntity.session,
       };
 
   /// True for any delete, whatever the entity.
@@ -230,7 +237,13 @@ class QueuedOp {
   bool get isDelete => kind == OpKind.deleteTask || kind == OpKind.deleteList;
 
   String get method => switch (kind) {
-        OpKind.createTask || OpKind.completeTask || OpKind.createList => 'POST',
+        OpKind.createTask ||
+        OpKind.completeTask ||
+        OpKind.createList ||
+        OpKind.createSession ||
+        OpKind.completeSession ||
+        OpKind.cancelSession =>
+          'POST',
         OpKind.updateTask => 'PATCH',
         OpKind.deleteTask || OpKind.deleteList => 'DELETE',
       };
@@ -402,7 +415,13 @@ List<String> unresolvedDeps(QueuedOp op, Map<String, String> idMap) {
 /// here, deliberately: goals are not queueable yet, so nothing can produce a
 /// local goal id and an entry for it would be protection that looks real and
 /// covers nothing. It goes in with the goal queue, in the same change.
-const List<String> kIdBearingBodyKeys = <String>['parentTaskId', 'listId'];
+/// `taskId` is here because a focus session can be attributed to a task created
+/// in the same offline stretch, so its body can carry `taskId: 'local_…'`.
+const List<String> kIdBearingBodyKeys = <String>[
+  'parentTaskId',
+  'listId',
+  'taskId',
+];
 
 /// Substitute local ids into a throwaway request. Returns [Resolution.blocked]
 /// if any is still unknown — the caller must then FAIL CLOSED rather than send.
@@ -451,11 +470,15 @@ Resolution resolve(QueuedOp op, Map<String, String> idMap) {
     OpKind.completeTask => '/tasks/$target/complete',
     OpKind.createList => '/lists',
     OpKind.deleteList => '/lists/$target',
+    OpKind.createSession => '/sessions',
+    OpKind.completeSession => '/sessions/$target/complete',
+    OpKind.cancelSession => '/sessions/$target/cancel',
   };
 
   final String? idPath = switch (op.kind) {
     OpKind.createTask => 'task.id',
     OpKind.createList => 'list.id',
+    OpKind.createSession => 'session.id',
     _ => null,
   };
 
@@ -594,6 +617,27 @@ List<QueuedOp>? cancelCreateThenDelete(List<QueuedOp> ops, String localId) {
   return ops.where((QueuedOp o) => !doomed.contains(o.id)).toList();
 }
 
+/// The key a queued edit uses to say which version it was based on.
+const String kPreconditionKey = 'expectedUpdatedAt';
+
+/// The same body with its optimistic-concurrency precondition removed.
+///
+/// Retrying a 409'd edit with the SAME precondition would 409 forever — the row
+/// it names has already moved on and never moves back. Dropping it turns "Try
+/// again" into the only thing it can honestly mean here: send it anyway, on top
+/// of whatever is there now. The UI says so before the user taps.
+///
+/// This does not breach the never-rewrite-a-persisted-body rule. That rule
+/// exists to keep the server's body hash stable under an already-minted
+/// idempotency key, and PATCH /tasks/:id carries no key at all — there is
+/// nothing to destabilise.
+Map<String, dynamic>? withoutPrecondition(Map<String, dynamic>? body) {
+  if (body == null || !body.containsKey(kPreconditionKey)) return body;
+  final Map<String, dynamic> out = Map<String, dynamic>.from(body)
+    ..remove(kPreconditionKey);
+  return out;
+}
+
 // --- summaries ---------------------------------------------------------------
 
 String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle) {
@@ -612,6 +656,10 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.deleteTask =>
       'task',
     OpKind.createList || OpKind.deleteList => 'list',
+    OpKind.createSession ||
+    OpKind.completeSession ||
+    OpKind.cancelSession =>
+      'focus session',
   };
   final String subject = label.isEmpty ? 'a $noun' : '"$label"';
   return switch (kind) {
@@ -621,5 +669,8 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.deleteTask => 'Delete $subject',
     OpKind.createList => 'New list $subject',
     OpKind.deleteList => 'Delete list $subject',
+    OpKind.createSession => 'Focus session',
+    OpKind.completeSession => 'Finished focus session',
+    OpKind.cancelSession => 'Stopped focus session',
   };
 }

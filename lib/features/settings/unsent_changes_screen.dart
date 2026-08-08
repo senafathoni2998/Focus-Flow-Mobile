@@ -150,6 +150,12 @@ class _DeadRow extends ConsumerWidget {
         return 'This waited too long without a connection.';
       case DeadReason.rejected:
       case null:
+        if (op.errorStatus == 409) {
+          // Different from every other rejection: nothing is wrong with the
+          // change, it was simply based on a version that no longer exists.
+          return '${op.errorMessage ?? 'This changed somewhere else.'} '
+              'Trying again will send it anyway, over the newer version.';
+        }
         return op.errorMessage ?? 'The server refused this change.';
     }
   }

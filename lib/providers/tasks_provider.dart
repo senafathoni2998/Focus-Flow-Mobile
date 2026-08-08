@@ -110,6 +110,18 @@ class TasksController extends StateNotifier<AsyncValue<List<Task>>> {
     state = AsyncValue.data(list);
   }
 
+  /// The version an edit is based on, or null if we have never seen the row.
+  ///
+  /// A LOCAL id has no server version yet, so there is nothing to check against
+  /// and sending one would be meaningless.
+  String? _versionOf(String id) {
+    if (isLocalId(id)) return null;
+    for (final Task t in _current) {
+      if (t.id == id) return t.updatedAt?.toUtc().toIso8601String();
+    }
+    return null;
+  }
+
   String _titleOf(String id) {
     for (final Task t in _current) {
       if (t.id == id) return t.title;
@@ -160,13 +172,21 @@ class TasksController extends StateNotifier<AsyncValue<List<Task>>> {
   }
 
   Future<SubmitOutcome> update(String id, Map<String, dynamic> body) async {
+    // The version this edit was based on. The server 409s if the row moved on
+    // since — a conflict that only became worth reporting once an edit could sit
+    // in a queue for days rather than milliseconds.
+    final String? seenVersion = _versionOf(id);
+    final Map<String, dynamic> withPrecondition = seenVersion == null
+        ? body
+        : <String, dynamic>{...body, 'expectedUpdatedAt': seenVersion};
+
     final QueuedOp op = QueuedOp(
       id: newOpId(),
       seq: 0,
       kind: OpKind.updateTask,
       target: id,
       deps: _depsFor(id, body),
-      body: body,
+      body: withPrecondition,
       // No key: PATCH /tasks/:id does not opt into idempotency and does not need
       // to. Every field is an absolute assignment, tags and reminders are full
       // replacements, and completedAt is `existing ?? now` — so replaying the

@@ -564,6 +564,51 @@ void main() {
       expect(flusher.doc.ops.single.key!.length, 32);
     });
 
+    test('retry after a CONFLICT drops the precondition, or it 409s forever', () async {
+      // A 409 here means somebody else changed the row after this edit was made.
+      // The version it names will never be current again, so retrying with it
+      // could only conflict again — "Try again" has to mean "send it anyway".
+      flusher = build(<TransportResult>[offline(), http(409)]);
+      await flusher.submit(mkOp('p',
+          kind: OpKind.updateTask,
+          target: 'srv1',
+          body: <String, dynamic>{
+            'title': 'edited offline',
+            kPreconditionKey: '2026-08-05T10:00:00.000Z',
+          }));
+      await pump();
+      await flusher.flush(force: true);
+      await pump();
+
+      expect(flusher.deadCount, 1);
+      final QueuedOp dead = flusher.doc.dead.single;
+      expect(dead.errorStatus, 409);
+      expect(dead.body![kPreconditionKey], isNotNull);
+
+      await flusher.retryDead(dead.id);
+      final QueuedOp revived = flusher.doc.ops.single;
+      expect(revived.body!.containsKey(kPreconditionKey), isFalse);
+      // The edit itself is intact — only the version it was based on is gone.
+      expect(revived.body!['title'], 'edited offline');
+    });
+
+    test('retry after any OTHER rejection keeps the body whole', () async {
+      flusher = build(<TransportResult>[offline(), http(400)]);
+      await flusher.submit(mkOp('p',
+          kind: OpKind.updateTask,
+          target: 'srv1',
+          body: <String, dynamic>{
+            'title': 'x',
+            kPreconditionKey: '2026-08-05T10:00:00.000Z',
+          }));
+      await pump();
+      await flusher.flush(force: true);
+      await pump();
+
+      await flusher.retryDead(flusher.doc.dead.single.id);
+      expect(flusher.doc.ops.single.body![kPreconditionKey], isNotNull);
+    });
+
     test('discard removes only the row asked for', () async {
       flusher = build(<TransportResult>[offline(), http(400), http(400), offline()]);
       await flusher.submit(mkOp('a', assigns: 'local_a'));

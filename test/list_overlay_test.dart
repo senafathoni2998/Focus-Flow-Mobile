@@ -267,6 +267,64 @@ void main() {
       expect(d.op!.idPath, isNull);
     });
 
+    test('a focus session routes to its own three endpoints', () {
+      final Resolution c = resolve(
+        op(id: 'o1', seq: 1, kind: OpKind.createSession, assigns: 'local_s',
+            body: <String, dynamic>{'type': 'pomodoro', 'duration': 1500}),
+        const <String, String>{},
+      );
+      expect(c.op!.path, '/sessions');
+      expect(c.op!.method, 'POST');
+      expect(c.op!.idPath, 'session.id');
+
+      final Resolution done = resolve(
+        op(id: 'o2', seq: 2, kind: OpKind.completeSession, target: 'local_s',
+            deps: <String>['local_s']),
+        <String, String>{'local_s': 'srvS'},
+      );
+      expect(done.op!.path, '/sessions/srvS/complete');
+
+      final Resolution stop = resolve(
+        op(id: 'o3', seq: 3, kind: OpKind.cancelSession, target: 'local_s',
+            deps: <String>['local_s']),
+        <String, String>{'local_s': 'srvS'},
+      );
+      expect(stop.op!.path, '/sessions/srvS/cancel');
+    });
+
+    test('a session attributed to an offline task resolves its taskId', () {
+      // A pomodoro can be started against a task created in the same offline
+      // stretch, so the body carries a local task id — the THIRD cross-entity
+      // reference, after parentTaskId and listId.
+      final Map<String, dynamic> body = <String, dynamic>{
+        'taskId': 'local_T',
+        'type': 'pomodoro',
+        'duration': 1500,
+        'startTime': '2026-08-05T09:00:00.000Z',
+      };
+      final Resolution r = resolve(
+        op(id: 'o1', seq: 2, kind: OpKind.createSession, assigns: 'local_s',
+            deps: <String>['local_T'], body: body),
+        <String, String>{'local_T': 'srvT'},
+      );
+      expect(r.op!.body!['taskId'], 'srvT');
+      // The frozen start instant is untouched — it is what puts the session on
+      // the right DAY once it finally reaches the server.
+      expect(r.op!.body!['startTime'], '2026-08-05T09:00:00.000Z');
+      expect(body['taskId'], 'local_T');
+    });
+
+    test('an unresolved local taskId blocks the session', () {
+      final Resolution r = resolve(
+        op(id: 'o1', seq: 2, kind: OpKind.createSession, assigns: 'local_s',
+            deps: <String>['local_T'],
+            body: <String, dynamic>{'taskId': 'local_T', 'duration': 1500}),
+        const <String, String>{},
+      );
+      expect(r.isReady, isFalse);
+      expect(r.missing, contains('local_T'));
+    });
+
     test('summaries say "list", not "task"', () {
       expect(summaryFor(OpKind.createList, <String, dynamic>{'name': 'Holiday'}, ''),
           'New list "Holiday"');
@@ -278,6 +336,8 @@ void main() {
     test('entity and isDelete are derived from the kind', () {
       expect(op(id: 'a', seq: 1, kind: OpKind.createTask).entity, OpEntity.task);
       expect(op(id: 'a', seq: 1, kind: OpKind.deleteList).entity, OpEntity.list);
+      expect(op(id: 'a', seq: 1, kind: OpKind.createSession).entity, OpEntity.session);
+      expect(op(id: 'a', seq: 1, kind: OpKind.cancelSession).isDelete, isFalse);
       expect(op(id: 'a', seq: 1, kind: OpKind.deleteList).isDelete, isTrue);
       expect(op(id: 'a', seq: 1, kind: OpKind.createList).isDelete, isFalse);
     });

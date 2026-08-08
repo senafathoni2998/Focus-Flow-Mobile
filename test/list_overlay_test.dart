@@ -18,6 +18,7 @@ QueuedOp op({
   String? assigns,
   List<String> deps = const <String>[],
   Map<String, dynamic>? body,
+  DeadReason? reason,
 }) =>
     QueuedOp(
       id: id,
@@ -29,6 +30,7 @@ QueuedOp op({
       body: body,
       summary: 's',
       createdAtMs: 0,
+      reason: reason,
     );
 
 TaskList list(String id, {String name = 'Work'}) =>
@@ -127,6 +129,23 @@ void main() {
         const <String, String>{},
       );
       expect(out, isEmpty);
+    });
+
+    test('a FAILED delete brings the list back', () {
+      final List<TaskList> out = applyListQueue(
+        <TaskList>[list('srv1')],
+        <QueuedOp>[
+          op(
+            id: 'o1',
+            seq: 1,
+            kind: OpKind.deleteList,
+            target: 'srv1',
+            reason: DeadReason.rejected,
+          )
+        ],
+        const <String, String>{},
+      );
+      expect(out.single.id, 'srv1');
     });
 
     test('task ops are ignored, not folded through', () {

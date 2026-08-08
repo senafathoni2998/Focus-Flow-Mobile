@@ -86,6 +86,18 @@ final allListsProvider = Provider<List<TaskList>>((ref) {
   return applyListQueue(server, [...pending, ...dead], idMap);
 });
 
+/// The selected list id, resolved through the queue's id map.
+///
+/// Selecting a list created offline stores its `local_` id in the filter. When
+/// the create lands, every task's `listId` becomes the SERVER id — so without
+/// this the comparison stopped matching and the view the user was looking at
+/// silently emptied, with a list still highlighted in the drawer.
+final selectedListIdProvider = Provider<String?>((ref) {
+  final id = ref.watch(taskFilterProvider).listId;
+  if (id == null || id == 'inbox') return id;
+  return ref.watch(queueIdMapProvider)[id] ?? id;
+});
+
 /// The filtered + sorted top-level tasks for the current selection.
 final visibleTasksProvider = Provider<List<Task>>((ref) {
   final all = ref.watch(allTasksProvider);
@@ -94,10 +106,11 @@ final visibleTasksProvider = Provider<List<Task>>((ref) {
 
   var list = all.where((t) => t.parentTaskId == null).toList();
 
-  if (f.listId == 'inbox') {
+  final selectedList = ref.watch(selectedListIdProvider);
+  if (selectedList == 'inbox') {
     list = list.where((t) => t.listId == null).toList();
-  } else if (f.listId != null) {
-    list = list.where((t) => t.listId == f.listId).toList();
+  } else if (selectedList != null) {
+    list = list.where((t) => t.listId == selectedList).toList();
   }
 
   if (f.tagId != null) {

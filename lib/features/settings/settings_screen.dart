@@ -83,7 +83,8 @@ class SettingsScreen extends ConsumerWidget {
               onPressed: () async {
                 final unsent = ref.read(unsentCountProvider);
                 if (unsent > 0) {
-                  final choice = await _confirmSignOutWithUnsent(context, unsent);
+                  final choice = await _confirmSignOutWithUnsent(
+                      context, unsent, ref.read(failedCountProvider));
                   if (choice == null) return;
                   await ref
                       .read(authControllerProvider.notifier)
@@ -143,16 +144,35 @@ class _SectionHeader extends StatelessWidget {
 /// sign back in. Destroying someone's typed work because they signed out on a
 /// shared phone is exactly the loss this whole feature exists to prevent — so
 /// discarding is offered, never assumed.
-Future<bool?> _confirmSignOutWithUnsent(BuildContext context, int unsent) {
+Future<bool?> _confirmSignOutWithUnsent(
+    BuildContext context, int unsent, int failed) {
+  // The wording distinguishes the two, because they behave differently and the
+  // dialog used to promise the same thing for both. A pending change really is
+  // sent on the next sign-in; a FAILED one is never retried on its own — it
+  // waits in Unsent changes for the user to decide. Saying "they will be sent"
+  // about a dead letter is a promise the app does not keep.
+  final int waiting = unsent - failed;
+  final String body;
+  if (failed == 0) {
+    body = waiting == 1
+        ? 'It will be sent the next time you sign in to this account.'
+        : 'They will be sent the next time you sign in to this account.';
+  } else if (waiting == 0) {
+    body = failed == 1
+        ? 'It could not be saved and will not be retried on its own. It will '
+            'still be here, in Unsent changes, when you sign back in.'
+        : 'They could not be saved and will not be retried on their own. They '
+            'will still be here, in Unsent changes, when you sign back in.';
+  } else {
+    body = '$waiting will be sent the next time you sign in. $failed could not '
+        'be saved and will be waiting in Unsent changes.';
+  }
+  final String plural = unsent == 1 ? '' : 's';
   return showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: Text('You have $unsent unsent change${unsent == 1 ? '' : 's'}'),
-      content: Text(
-        unsent == 1
-            ? "It will be sent the next time you sign in to this account."
-            : "They will be sent the next time you sign in to this account.",
-      ),
+      title: Text('You have $unsent unsent change$plural'),
+      content: Text(body),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(ctx),

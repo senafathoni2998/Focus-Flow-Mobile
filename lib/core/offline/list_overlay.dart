@@ -66,6 +66,10 @@ List<TaskList> applyListQueue(
 
       case OpKind.deleteList:
         {
+          // A FAILED delete means the list is still on the server, so hiding it
+          // would be the app asserting something untrue. See the note in
+          // task_overlay.dart's fold.
+          if (op.reason != null) break;
           final int i = indexOf(op.target);
           if (i < 0) break;
           rows.removeAt(i);

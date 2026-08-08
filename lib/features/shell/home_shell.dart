@@ -8,6 +8,7 @@ import '../../providers/habits_provider.dart';
 import '../../providers/lists_provider.dart';
 import '../../providers/tags_provider.dart';
 import '../../providers/providers.dart';
+import '../../core/offline/queue_flusher.dart';
 import '../../providers/write_queue_provider.dart';
 import '../../providers/share_provider.dart';
 import '../../providers/tasks_provider.dart';
@@ -117,12 +118,20 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     // wording. Showing only the read banner while writes pile up unsent would be
     // the more dangerous silence of the two.
     final showBanner = servingCache || unsent > 0;
+    // "Sending" is only true while the flusher is actually running. Switching on
+    // airplane mode without changing tabs leaves servingCache false (nothing has
+    // tried a cached read yet), so the old wording announced that writes were
+    // going out at the exact moment nothing could.
+    final queueState = ref.watch(queueStateProvider);
+    final waiting = queueState != FlushState.running;
     final bannerText = failed > 0
         ? "$failed change${failed == 1 ? '' : 's'} couldn't be saved"
         : unsent > 0
-            ? (servingCache
-                ? 'Offline — $unsent change${unsent == 1 ? '' : 's'} waiting'
-                : 'Sending $unsent change${unsent == 1 ? '' : 's'}…')
+            ? (queueState == FlushState.pausedAuth
+                ? '$unsent change${unsent == 1 ? '' : 's'} waiting — sign in to send'
+                : waiting
+                    ? 'Offline — $unsent change${unsent == 1 ? '' : 's'} waiting'
+                    : 'Sending $unsent change${unsent == 1 ? '' : 's'}…')
             : 'Offline — showing saved data';
 
     return Scaffold(

@@ -23,6 +23,7 @@ QueuedOp op({
   String target = '',
   String? assigns,
   Map<String, dynamic>? body,
+  DeadReason? reason,
 }) =>
     QueuedOp(
       id: id,
@@ -33,6 +34,7 @@ QueuedOp op({
       body: body,
       summary: 's',
       createdAtMs: 0,
+      reason: reason,
     );
 
 void main() {
@@ -307,6 +309,82 @@ void main() {
       );
       expect(out.length, 1);
       expect(out.single.title, 't');
+    });
+  });
+
+  group('a dead op never asserts a server change that did not happen', () {
+    test('a FAILED delete brings the row back', () {
+      // The blanket fold kept hiding it, so the user believed a task was gone
+      // that the server still had — and the only hint was a badge on a row they
+      // could no longer see.
+      final List<Task> out = applyQueue(
+        <Task>[task('srv1')],
+        <QueuedOp>[
+          op(
+            id: 'o1',
+            seq: 1,
+            kind: OpKind.deleteTask,
+            target: 'srv1',
+            reason: DeadReason.rejected,
+          )
+        ],
+        const <String, String>{},
+      );
+      expect(out.single.id, 'srv1');
+    });
+
+    test('a FAILED complete does not show as completed', () {
+      final List<Task> out = applyQueue(
+        <Task>[task('srv1')],
+        <QueuedOp>[
+          op(
+            id: 'o1',
+            seq: 1,
+            kind: OpKind.completeTask,
+            target: 'srv1',
+            reason: DeadReason.rejected,
+          )
+        ],
+        const <String, String>{},
+      );
+      expect(out.single.status, 'todo');
+      expect(out.single.completedAt, isNull);
+    });
+
+    test('a FAILED create still shows — that is the user\'s own typing', () {
+      final List<Task> out = applyQueue(
+        const <Task>[],
+        <QueuedOp>[
+          op(
+            id: 'o1',
+            seq: 1,
+            kind: OpKind.createTask,
+            assigns: 'local_a',
+            body: <String, dynamic>{'title': 'Buy milk'},
+            reason: DeadReason.rejected,
+          )
+        ],
+        const <String, String>{},
+      );
+      expect(out.single.title, 'Buy milk');
+    });
+
+    test('a FAILED edit still shows the text they typed', () {
+      final List<Task> out = applyQueue(
+        <Task>[task('srv1', title: 'old')],
+        <QueuedOp>[
+          op(
+            id: 'o1',
+            seq: 1,
+            kind: OpKind.updateTask,
+            target: 'srv1',
+            body: <String, dynamic>{'title': 'their new title'},
+            reason: DeadReason.rejected,
+          )
+        ],
+        const <String, String>{},
+      );
+      expect(out.single.title, 'their new title');
     });
   });
 

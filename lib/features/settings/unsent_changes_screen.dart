@@ -22,6 +22,7 @@ class UnsentChangesScreen extends ConsumerWidget {
     final List<QueuedOp> dead = ref.watch(deadOpsProvider);
     final FlushState state = ref.watch(queueStateProvider);
     final bool corrupted = ref.watch(queueCorruptedProvider);
+    final int dropped = ref.watch(droppedDeadProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -55,6 +56,18 @@ class UnsentChangesScreen extends ConsumerWidget {
           : ListView(
               padding: const EdgeInsets.only(bottom: 32),
               children: <Widget>[
+                if (dropped > 0)
+                  // The cap is real, so say it happened rather than letting the
+                  // oldest failures disappear behind a count that never moved.
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                    child: Text(
+                      '$dropped older failure${dropped == 1 ? ' was' : 's were'} '
+                      'dropped to make room.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.error),
+                    ),
+                  ),
                 if (dead.isNotEmpty) ...<Widget>[
                   _SectionHeader(
                     title: 'Not saved',

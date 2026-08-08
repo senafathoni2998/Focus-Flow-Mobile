@@ -30,6 +30,9 @@ final queueStateProvider = StateProvider<FlushState>((ref) => FlushState.idle);
 /// is gone from the app; saying so is the least we owe the user.
 final queueCorruptedProvider = StateProvider<bool>((ref) => false);
 
+/// Failures dropped to stay under the dead-letter cap. See QueueDoc.droppedDead.
+final droppedDeadProvider = StateProvider<int>((ref) => 0);
+
 final queueFlusherProvider = Provider<QueueFlusher>((ref) {
   final QueueFlusher flusher = QueueFlusher(
     store: ref.watch(writeQueueStoreProvider),
@@ -45,6 +48,7 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
       ref.read(inFlightOpIdProvider.notifier).state = inFlightOpId;
       ref.read(queueStateProvider.notifier).state = state;
       ref.read(queueCorruptedProvider.notifier).state = recoveredFromCorruption;
+      ref.read(droppedDeadProvider.notifier).state = doc.droppedDead;
     },
     onServerRow: (OpEntity entity, Map<String, dynamic> row) {
       // Written into server truth in the same turn the op leaves the queue, so

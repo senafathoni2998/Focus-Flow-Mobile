@@ -177,6 +177,19 @@ List<Task> applyQueue(
   // Each case body is braced: Dart gives all cases of one switch a SHARED
   // scope, so two cases declaring `body` would collide.
   for (final QueuedOp op in ordered) {
+    // A DEAD op is folded for what the user TYPED, never for a server state
+    // change that did not happen.
+    //
+    // Dead ops are in this list on purpose: a task someone wrote offline whose
+    // create the server then rejected must not vanish from the screen. But the
+    // same blanket fold made a FAILED delete keep the row hidden and a FAILED
+    // complete keep it ticked — the app asserting two things about the server
+    // that are simply false, with the row's own badge the only hint. A create
+    // or an edit still shows, because that is the user's own text; a removal or
+    // a status change does not, because there is nothing of theirs to preserve
+    // and the claim is wrong.
+    final bool isDead = op.reason != null;
+
     switch (op.kind) {
       case OpKind.createTask:
         {
@@ -199,6 +212,7 @@ List<Task> applyQueue(
 
       case OpKind.completeTask:
         {
+          if (isDead) break; // the server never recorded it
           final int i = indexOf(op.target);
           if (i < 0) break;
           final Map<String, dynamic> row = Map<String, dynamic>.from(rows[i]);
@@ -214,6 +228,7 @@ List<Task> applyQueue(
 
       case OpKind.deleteTask:
         {
+          if (isDead) break; // the row is still on the server; show it again
           final int i = indexOf(op.target);
           if (i < 0) break;
           final Object? goneId = rows[i]['id'];

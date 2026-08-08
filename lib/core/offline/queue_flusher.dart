@@ -715,9 +715,15 @@ class QueueFlusher {
     }
 
     List<QueuedOp> dead = <QueuedOp>[..._doc.dead, ...dying];
-    if (dead.length > kMaxDead) dead = dead.sublist(dead.length - kMaxDead);
+    int dropped = _doc.droppedDead;
+    if (dead.length > kMaxDead) {
+      // Counted, not forgotten — see QueueDoc.droppedDead.
+      dropped += dead.length - kMaxDead;
+      dead = dead.sublist(dead.length - kMaxDead);
+    }
 
-    await _commit(_doc.copyWith(ops: remaining, dead: dead));
+    await _commit(
+        _doc.copyWith(ops: remaining, dead: dead, droppedDead: dropped));
   }
 
   // --- dead-letter actions ---------------------------------------------------

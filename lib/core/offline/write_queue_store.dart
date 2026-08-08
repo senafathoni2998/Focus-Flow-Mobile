@@ -37,6 +37,7 @@ class QueueDoc {
     this.ops = const <QueuedOp>[],
     this.dead = const <QueuedOp>[],
     this.idMap = const <String, String>{},
+    this.droppedDead = 0,
   });
 
   /// Monotonic allocator. Never reused, so FIFO order is stable across restarts.
@@ -45,6 +46,14 @@ class QueueDoc {
   final List<QueuedOp> dead;
   final Map<String, String> idMap;
 
+  /// How many dead letters were dropped to stay under [kMaxDead].
+  ///
+  /// Counted rather than forgotten. "Nothing is ever auto-discarded" is one of
+  /// this feature's promises, and the cap quietly broke it — a heavy offline
+  /// week could push older failures out with nothing said anywhere. The cap
+  /// stays (unbounded growth is its own failure), but the user is told.
+  final int droppedDead;
+
   bool get isEmpty => ops.isEmpty && dead.isEmpty;
 
   QueueDoc copyWith({
@@ -52,12 +61,14 @@ class QueueDoc {
     List<QueuedOp>? ops,
     List<QueuedOp>? dead,
     Map<String, String>? idMap,
+    int? droppedDead,
   }) {
     return QueueDoc(
       seq: seq ?? this.seq,
       ops: ops ?? this.ops,
       dead: dead ?? this.dead,
       idMap: idMap ?? this.idMap,
+      droppedDead: droppedDead ?? this.droppedDead,
     );
   }
 
@@ -67,6 +78,8 @@ class QueueDoc {
         'ops': ops.map((QueuedOp o) => o.toJson()).toList(),
         'idMap': idMap,
         'dead': dead.map((QueuedOp o) => o.toJson()).toList(),
+        // Absent in a v1/v2 file, which reads back as 0 — no version bump.
+        if (droppedDead > 0) 'droppedDead': droppedDead,
       };
 
   /// Tolerant by design: a row it cannot read is dropped, never thrown. One bad
@@ -99,6 +112,7 @@ class QueueDoc {
       ops: readOps(j['ops']),
       dead: readOps(j['dead']),
       idMap: idMap,
+      droppedDead: j['droppedDead'] is int ? j['droppedDead'] as int : 0,
     );
   }
 }

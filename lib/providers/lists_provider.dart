@@ -19,15 +19,29 @@ class ListsController extends StateNotifier<AsyncValue<List<TaskList>>> {
   QueueFlusher get _queue => _ref.read(queueFlusherProvider);
   List<TaskList> get _current => state.value ?? const [];
 
+  /// Bumped by every refresh AND every server write, so a list response is only
+  /// applied if nothing newer happened while it was in flight.
+  ///
+  /// TasksController has carried this from the start; lists did not, and once
+  /// the queue began acking rows into `upsertFromServer` the gap became real: a
+  /// GET /lists fired on the Tasks tab could land AFTER an acked create and
+  /// overwrite it, dropping a list the user had just made back out of the
+  /// drawer until the next refresh.
+  int _gen = 0;
+
   Future<void> load() async {
     state = const AsyncValue.loading();
     await refresh();
   }
 
   Future<void> refresh() async {
+    final int gen = ++_gen;
     try {
-      state = AsyncValue.data(await _repo.list());
+      final List<TaskList> fetched = await _repo.list();
+      if (gen != _gen) return; // superseded
+      state = AsyncValue.data(fetched);
     } catch (e, st) {
+      if (gen != _gen) return;
       // Keep the cached list alongside the error. Replacing it outright collapsed
       // the collection to [], so a mutation whose follow-up refresh failed (a POST
       // that succeeded, then a Wi-Fi -> LTE handover) blanked the whole screen and
@@ -41,7 +55,10 @@ class ListsController extends StateNotifier<AsyncValue<List<TaskList>>> {
   /// Like [refresh] but RETHROWS, so a mutation's caller can surface the failure
   /// instead of it being swallowed into the state and the mutation looking fine.
   Future<void> reload() async {
-    state = AsyncValue.data(await _repo.list());
+    final int gen = ++_gen;
+    final List<TaskList> fetched = await _repo.list();
+    if (gen != _gen) return;
+    state = AsyncValue.data(fetched);
   }
 
   /// Fold one authoritative list row into server truth, in the same turn the op
@@ -55,6 +72,7 @@ class ListsController extends StateNotifier<AsyncValue<List<TaskList>>> {
     } else {
       list.add(l);
     }
+    _gen++;
     state = AsyncValue.data(list);
   }
 
@@ -114,6 +132,7 @@ class ListsController extends StateNotifier<AsyncValue<List<TaskList>>> {
     );
     final outcome = (await _queue.submit(op)).outcome;
     if (outcome == SubmitOutcome.sent) {
+      _gen++;
       state = AsyncValue.data(_current.where((l) => l.id != id).toList());
     }
     return outcome;

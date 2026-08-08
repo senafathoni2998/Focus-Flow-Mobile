@@ -18,7 +18,7 @@ import 'dart:math';
 
 /// Which entity an op acts on. Derived from [OpKind] rather than stored, so the
 /// two can never disagree on disk.
-enum OpEntity { task, list, session }
+enum OpEntity { task, list, session, goal }
 
 /// Every queued write. Everything NOT here is online-only on purpose; see
 /// DECISIONS.md F7 for the per-operation refusals and the reason for each.
@@ -37,6 +37,10 @@ enum OpKind {
   createSession,
   completeSession,
   cancelSession,
+  createGoal,
+  updateGoal,
+  deleteGoal,
+  setGoalStatus,
 }
 
 /// What the flusher decided about one send.
@@ -226,6 +230,11 @@ class QueuedOp {
         OpKind.completeSession ||
         OpKind.cancelSession =>
           OpEntity.session,
+        OpKind.createGoal ||
+        OpKind.updateGoal ||
+        OpKind.deleteGoal ||
+        OpKind.setGoalStatus =>
+          OpEntity.goal,
       };
 
   /// True for any delete, whatever the entity.
@@ -234,7 +243,7 @@ class QueuedOp {
   /// `kind == OpKind.deleteTask` — as it did while tasks were the only entity —
   /// would dead-letter a re-sent list delete with "List not found", for a list
   /// that IS gone, behind a Retry button that could never succeed.
-  bool get isDelete => kind == OpKind.deleteTask || kind == OpKind.deleteList;
+  bool get isDelete => isDeleteKind(kind);
 
   String get method => switch (kind) {
         OpKind.createTask ||
@@ -242,10 +251,12 @@ class QueuedOp {
         OpKind.createList ||
         OpKind.createSession ||
         OpKind.completeSession ||
-        OpKind.cancelSession =>
+        OpKind.cancelSession ||
+        OpKind.createGoal ||
+        OpKind.setGoalStatus =>
           'POST',
-        OpKind.updateTask => 'PATCH',
-        OpKind.deleteTask || OpKind.deleteList => 'DELETE',
+        OpKind.updateTask || OpKind.updateGoal => 'PATCH',
+        OpKind.deleteTask || OpKind.deleteList || OpKind.deleteGoal => 'DELETE',
       };
 
   bool get carriesKey => key != null;
@@ -421,6 +432,10 @@ const List<String> kIdBearingBodyKeys = <String>[
   'parentTaskId',
   'listId',
   'taskId',
+  // Added with the goal queue, not before it: until a goal could be created
+  // offline nothing could produce a local goal id, and an entry for it would
+  // have been protection that looked real and covered nothing.
+  'goalId',
 ];
 
 /// Substitute local ids into a throwaway request. Returns [Resolution.blocked]
@@ -473,12 +488,16 @@ Resolution resolve(QueuedOp op, Map<String, String> idMap) {
     OpKind.createSession => '/sessions',
     OpKind.completeSession => '/sessions/$target/complete',
     OpKind.cancelSession => '/sessions/$target/cancel',
+    OpKind.createGoal => '/goals',
+    OpKind.updateGoal || OpKind.deleteGoal => '/goals/$target',
+    OpKind.setGoalStatus => '/goals/$target/status',
   };
 
   final String? idPath = switch (op.kind) {
     OpKind.createTask => 'task.id',
     OpKind.createList => 'list.id',
     OpKind.createSession => 'session.id',
+    OpKind.createGoal => 'goal.id',
     _ => null,
   };
 
@@ -513,7 +532,7 @@ OpOutcome classify({
   // This is SUCCESS FOR DELETES ONLY. A 404 on a complete means the completion
   // was never recorded; calling that success would drop the op, drop its
   // optimistic row, and un-tick the checkbox on the next refresh with no trace.
-  if (status == 404 && _isDeleteKind(kind)) return OpOutcome.succeeded;
+  if (status == 404 && isDeleteKind(kind)) return OpOutcome.succeeded;
 
   if (status == 401) return OpOutcome.authPaused;
 
@@ -553,8 +572,29 @@ bool isDue(QueuedOp op, int nowMs) {
   return op.nextAtMs - nowMs > kMaxBackoff.inMilliseconds;
 }
 
-bool _isDeleteKind(OpKind kind) =>
-    kind == OpKind.deleteTask || kind == OpKind.deleteList;
+/// Whether a 404 means "already done" for this kind.
+///
+/// A SWITCH, not a chain of ==, and that is the whole point. This lived as
+/// `kind == deleteTask || kind == deleteList` alongside a separate `isDelete`
+/// getter that said the same thing — so adding `deleteGoal` updated one and not
+/// the other, and a re-sent goal delete dead-lettered with "Goal not found" for
+/// a goal that WAS gone, behind a Retry that could never work. Nothing warned:
+/// neither form is exhaustive-checked. Now there is one definition and the
+/// compiler asks about every new kind.
+bool isDeleteKind(OpKind kind) => switch (kind) {
+      OpKind.deleteTask || OpKind.deleteList || OpKind.deleteGoal => true,
+      OpKind.createTask ||
+      OpKind.updateTask ||
+      OpKind.completeTask ||
+      OpKind.createList ||
+      OpKind.createSession ||
+      OpKind.completeSession ||
+      OpKind.cancelSession ||
+      OpKind.createGoal ||
+      OpKind.updateGoal ||
+      OpKind.setGoalStatus =>
+        false,
+    };
 
 bool isExpired(QueuedOp op, int nowMs) =>
     nowMs - op.createdAtMs > const Duration(days: kExpiryDays).inMilliseconds;
@@ -660,6 +700,11 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.completeSession ||
     OpKind.cancelSession =>
       'focus session',
+    OpKind.createGoal ||
+    OpKind.updateGoal ||
+    OpKind.deleteGoal ||
+    OpKind.setGoalStatus =>
+      'goal',
   };
   final String subject = label.isEmpty ? 'a $noun' : '"$label"';
   return switch (kind) {
@@ -672,5 +717,9 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.createSession => 'Focus session',
     OpKind.completeSession => 'Finished focus session',
     OpKind.cancelSession => 'Stopped focus session',
+    OpKind.createGoal => 'New goal $subject',
+    OpKind.updateGoal => 'Edit goal $subject',
+    OpKind.deleteGoal => 'Delete goal $subject',
+    OpKind.setGoalStatus => 'Change goal status $subject',
   };
 }

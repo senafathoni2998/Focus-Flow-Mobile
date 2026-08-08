@@ -10,6 +10,7 @@ import '../core/offline/write_queue_store.dart';
 import '../data/sync_repository.dart';
 import 'providers.dart';
 import 'dashboard_provider.dart';
+import 'goals_provider.dart';
 import 'lists_provider.dart';
 import 'session_provider.dart';
 import 'tags_provider.dart';
@@ -64,6 +65,13 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
           ref.read(tasksControllerProvider.notifier).upsertFromServer(row);
         case OpEntity.list:
           ref.read(listsControllerProvider.notifier).upsertFromServer(row);
+        case OpEntity.goal:
+          // Deliberately NOT folded. POST /goals and PATCH /goals/:id return the
+          // RAW row — goalService applies withProgress/withTaskCounts only in
+          // the LIST endpoints — so upserting an ack would blank the goal to 0%
+          // until the next full fetch. The post-drain delta carries the properly
+          // serialised row instead.
+          break;
         case OpEntity.session:
           // Nothing to fold. The focus timer runs off local state and its
           // complete/cancel ops reference the session by its LOCAL id, which the
@@ -114,6 +122,9 @@ Future<void> _reconcileAfterDrain(Ref ref, Set<OpEntity> touched) async {
         full: delta.full);
     ref.read(tagsControllerProvider.notifier).applyServerDelta(
         delta.tags, deletedOf('tag'),
+        full: delta.full);
+    ref.read(goalsControllerProvider.notifier).applyServerDelta(
+        delta.goals, deletedOf('goal'),
         full: delta.full);
 
     if (touched.contains(OpEntity.session)) {

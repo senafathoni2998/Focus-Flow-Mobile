@@ -3,9 +3,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../core/horizons.dart';
 import '../models/task.dart';
+import '../core/offline/goal_overlay.dart';
 import '../core/offline/list_overlay.dart';
 import '../core/offline/task_overlay.dart';
+import '../models/goal.dart';
 import '../models/task_list.dart';
+import 'goals_provider.dart';
 import 'lists_provider.dart';
 import 'tasks_provider.dart';
 import 'write_queue_provider.dart';
@@ -96,6 +99,17 @@ final selectedListIdProvider = Provider<String?>((ref) {
   final id = ref.watch(taskFilterProvider).listId;
   if (id == null || id == 'inbox') return id;
   return ref.watch(queueIdMapProvider)[id] ?? id;
+});
+
+/// Server truth for goals with pending writes folded on top. Every goal reader
+/// watches this, never `goalsControllerProvider` directly.
+final allGoalsProvider = Provider<List<Goal>>((ref) {
+  final server = ref.watch(goalsControllerProvider).value ?? const <Goal>[];
+  final pending = ref.watch(pendingOpsProvider);
+  final dead = ref.watch(deadOpsProvider);
+  final idMap = ref.watch(queueIdMapProvider);
+  if (pending.isEmpty && dead.isEmpty) return server;
+  return applyGoalQueue(server, [...pending, ...dead], idMap);
 });
 
 /// The filtered + sorted top-level tasks for the current selection.

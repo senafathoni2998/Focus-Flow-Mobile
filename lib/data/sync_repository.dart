@@ -15,6 +15,7 @@ class SyncDelta {
     required this.tasks,
     required this.lists,
     required this.tags,
+    required this.goals,
     required this.deleted,
   });
 
@@ -29,6 +30,7 @@ class SyncDelta {
   final List<Map<String, dynamic>> tasks;
   final List<Map<String, dynamic>> lists;
   final List<Map<String, dynamic>> tags;
+  final List<Map<String, dynamic>> goals;
 
   /// `(entityType, entityId)` pairs from the server's tombstones — the only way
   /// a delta can tell a client that something is gone, since a deleted row
@@ -49,6 +51,7 @@ class SyncDelta {
       tasks: asMapList(changed['tasks']),
       lists: asMapList(changed['lists']),
       tags: asMapList(changed['tags']),
+      goals: asMapList(changed['goals']),
       deleted: deleted,
     );
   }

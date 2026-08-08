@@ -244,6 +244,10 @@ List<Task> applyQueue(
       case OpKind.createSession:
       case OpKind.completeSession:
       case OpKind.cancelSession:
+      case OpKind.createGoal:
+      case OpKind.updateGoal:
+      case OpKind.deleteGoal:
+      case OpKind.setGoalStatus:
         // Filtered out above; listed so a new entity cannot be added without
         // the compiler asking what this overlay should do about it.
         break;

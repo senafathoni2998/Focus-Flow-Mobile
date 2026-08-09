@@ -107,6 +107,37 @@ more coupling/flicker. Easy to add if you want it.
 **F6. App identity:** package `com.focusflow`, name "FocusFlow Mobile", version `1.0.0+1`. ⚠️
 Fine for sideloading. **❓ Change the package id before any Play Store upload.**
 
+**F6b. Cleartext is narrowed by build type, not removed — because TLS does not exist yet.** ⚠️
+`android:usesCleartextTraffic="true"` permitted plain http to EVERY host on the internet
+for the sake of one LAN backend. It is now a network security config: debug and profile
+stay permissive (a dev build follows you between networks and its address changes with the
+wifi), **release denies cleartext** except loopback and `10.0.2.2`, the emulator's alias for
+its host — which is also the app's built-in default, so a release build on an emulator still
+works out of the box.
+
+*Be clear about what this is not.* A bearer token on plain http is readable by anyone on the
+same network no matter which hosts are allowed. This narrows WHERE a shipped build can send
+one; it does not protect it in transit. **Only terminating TLS in front of the backend does**,
+and until that happens the tracked task stays open. Settings now says so on the Server URL row
+rather than leaving it in a README nobody re-reads.
+
+*The awkward consequence, stated rather than hidden:* the normal self-hosted case — a release
+APK against `http://192.168.x.x:3000` — now needs that host added to
+`android/app/src/main/res/xml/network_security_config.xml`. Android matches hostnames and IP
+literals, never CIDR, so "my LAN" cannot be expressed, and the platform decides before the app
+starts — which is why this is a build-time decision even though the server URL is a runtime
+setting. Debug builds are unaffected.
+
+**F6c. The API client does not follow redirects.** ✅
+`/api/v1/*` is a JSON API that never legitimately redirects. Following one meant anything that
+could answer for the backend could reply `302 Location: http://…` and the app would fetch that
+other host and hand its body back as the backend's answer — measured, with no error raised
+anywhere. The bearer token does NOT cross that hop (dart:io strips `Authorization` between
+hosts; `test/api_redirect_test.dart` measures both facts rather than assuming either), so this
+was response spoofing, not credential theft — an empty task list presented as authoritative.
+The one real cost is that a proxy upgrading http to https now fails instead of silently
+working, with an error naming the target and pointing at Settings.
+
 ---
 
 **F7. The offline write queue covers four TASK operations and two LIST operations — and

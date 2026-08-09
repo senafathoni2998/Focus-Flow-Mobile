@@ -85,9 +85,15 @@ class _GoalCard extends ConsumerWidget {
     final p = goal.progress;
     final ctrl = ref.read(goalsControllerProvider.notifier);
 
-    Future<void> run(Future<void> Function() f) async {
+    Future<void> run(Future<SubmitOutcome> Function() f) async {
       try {
-        await f();
+        // Silent when it lands, a word when it does not. The bar moving IS the
+        // feedback for a progress tap; the toast is only for "this has not gone
+        // anywhere yet".
+        final SubmitOutcome outcome = await f();
+        if (outcome == SubmitOutcome.deferred && context.mounted) {
+          showOfflineSaved(context);
+        }
       } catch (e) {
         if (context.mounted) showError(context, e);
       }

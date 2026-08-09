@@ -32,7 +32,8 @@ import 'queue_op.dart';
 ///   v3 — focus session create/complete/cancel
 ///   v4 — goal create/update/delete/status
 ///   v5 — habit create/update/delete/archive
-const int kQueueFormatVersion = 5;
+///   v6 — the two deltas: goal progress, habit check-in
+const int kQueueFormatVersion = 6;
 
 class QueueDoc {
   const QueueDoc({

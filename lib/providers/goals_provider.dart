@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../core/api_exception.dart';
 import '../data/goal_repository.dart';
 import '../models/goal.dart';
 import '../core/offline/queue_flusher.dart';
@@ -155,23 +154,32 @@ class GoalsController extends StateNotifier<AsyncValue<List<Goal>>> {
     return outcome;
   }
 
-  /// ONLINE-ONLY, still. See DECISIONS.md F7: the wire is safe, but offline the
-  /// card would not move, so the user taps again and produces two ops with two
-  /// different keys. An idempotency key defends against retry duplication, never
-  /// against duplicate intent our own UI manufactured. The overlay now exists;
-  /// what is still missing is a "+2 pending" badge on the card.
-  Future<void> adjustProgress(String id, num delta) async {
-    // A goal created offline has no server row yet, so its id is still a
-    // `local_` placeholder and this would POST to /goals/local_…/progress — a
-    // 404 the user could do nothing about. The id map resolves it once the
-    // create has landed; until then, say so plainly instead.
-    final resolved = _ref.read(queueIdMapProvider)[id] ?? id;
-    if (isLocalId(resolved)) {
-      throw ApiException(
-          "This goal hasn't been saved to the server yet — adjust it once it syncs.");
-    }
-    await _repo.adjustProgress(resolved, delta);
-    await reload();
+  /// QUEUED, finally. See DECISIONS.md F7: the refusal was never about the wire
+  /// — the route is key-wrapped — it was that offline the card did not move, so
+  /// the user tapped again and produced two ops with two DIFFERENT keys. The
+  /// overlay now recomputes the percent from the projected value, and
+  /// consecutive taps merge into one op.
+  ///
+  /// No frozen date, unlike a habit check-in: this endpoint has no notion of a
+  /// day, only of a running total.
+  Future<SubmitOutcome> adjustProgress(String id, num delta) async {
+    final body = <String, dynamic>{'delta': delta};
+    final op = QueuedOp(
+      id: newOpId(),
+      seq: 0,
+      kind: OpKind.adjustGoalProgress,
+      target: id,
+      // A goal created in this same offline stretch can be nudged: the queue
+      // blocks this op until the create resolves and then substitutes the real
+      // id, rather than POSTing to /goals/local_…/progress.
+      deps: isLocalId(id) ? <String>[id] : const <String>[],
+      body: body,
+      // MANDATORY. "+20 pages" applied twice is progress the user never made.
+      key: newIdempotencyKey(),
+      summary: summaryFor(OpKind.adjustGoalProgress, body, _titleOf(id)),
+      createdAtMs: _now,
+    );
+    return (await _queue.submit(op)).outcome;
   }
 
   Future<SubmitOutcome> setStatus(String id, String status) async {

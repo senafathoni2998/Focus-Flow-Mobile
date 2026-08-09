@@ -248,6 +248,8 @@ List<Task> applyQueue(
       case OpKind.updateGoal:
       case OpKind.deleteGoal:
       case OpKind.setGoalStatus:
+      case OpKind.adjustGoalProgress:
+      case OpKind.checkInHabit:
       case OpKind.createHabit:
       case OpKind.updateHabit:
       case OpKind.deleteHabit:

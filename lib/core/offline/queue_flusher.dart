@@ -96,7 +96,8 @@ class QueueFlusher {
     required void Function(QueueDoc doc, String? inFlightOpId, FlushState state,
             bool recoveredFromCorruption)
         onChanged,
-    required void Function(OpEntity entity, Map<String, dynamic> row) onServerRow,
+    required void Function(OpKind kind, OpEntity entity, Map<String, dynamic> row)
+        onServerRow,
     required void Function(Set<OpEntity> touched) onDrained,
     int Function() nowMs = _realNow,
   })  : _store = store,
@@ -113,7 +114,8 @@ class QueueFlusher {
   final void Function(QueueDoc doc, String? inFlightOpId, FlushState state,
           bool recoveredFromCorruption)
       _onChanged;
-  final void Function(OpEntity entity, Map<String, dynamic> row) _onServerRow;
+  final void Function(OpKind kind, OpEntity entity, Map<String, dynamic> row)
+      _onServerRow;
   final void Function(Set<OpEntity> touched) _onDrained;
   final int Function() _nowMs;
 
@@ -275,6 +277,20 @@ class QueueFlusher {
       if (collapsed != null) {
         await _commit(_doc.copyWith(seq: seq, ops: collapsed));
         return (outcome: SubmitOutcome.sent, response: null);
+      }
+    }
+
+    // Tapping + five times is one request that says +5, not five queued behind
+    // each other. Only ever merges into an op that has never been on the wire
+    // and is not the one in flight — see coalesceDelta for why each guard is
+    // there. Reported as `deferred`, because it is: nothing was sent.
+    if (isDeltaKind(staged.kind)) {
+      final List<QueuedOp>? merged =
+          coalesceDelta(ops, staged, inFlightOpId: _inFlightOpId);
+      if (merged != null) {
+        await _commit(_doc.copyWith(seq: seq, ops: merged));
+        kick();
+        return (outcome: SubmitOutcome.deferred, response: null);
       }
     }
 
@@ -632,6 +648,11 @@ class QueueFlusher {
   /// reads the one belonging to the op that was sent. Reading only `task` — as
   /// it did while tasks were the only entity — silently dropped a list create's
   /// response, and the drawer never learned the row's real id from the queue.
+  ///
+  /// The KIND goes out as well as the entity, because two ops on one entity can
+  /// return genuinely different things: `POST /habits` answers with a raw row
+  /// that must not be folded, while `POST /habits/:id/checkin` answers with a
+  /// fully scored one that must be.
   void _emitServerRow(QueuedOp op, TransportResult res) {
     final String envelope = switch (op.entity) {
       OpEntity.task => 'task',
@@ -641,7 +662,9 @@ class QueueFlusher {
       OpEntity.habit => 'habit',
     };
     final Object? row = res.body?[envelope];
-    if (row is Map) _onServerRow(op.entity, Map<String, dynamic>.from(row));
+    if (row is Map) {
+      _onServerRow(op.kind, op.entity, Map<String, dynamic>.from(row));
+    }
   }
 
   /// Charge an attempt. Returns true if the op is still pending, false if the

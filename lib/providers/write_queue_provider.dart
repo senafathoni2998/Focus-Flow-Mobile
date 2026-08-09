@@ -58,7 +58,7 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
       ref.read(queueCorruptedProvider.notifier).state = recoveredFromCorruption;
       ref.read(droppedDeadProvider.notifier).state = doc.droppedDead;
     },
-    onServerRow: (OpEntity entity, Map<String, dynamic> row) {
+    onServerRow: (OpKind kind, OpEntity entity, Map<String, dynamic> row) {
       // Written into server truth in the same turn the op leaves the queue, so
       // the row never blinks out between "acked" and "authoritative".
       switch (entity) {
@@ -74,13 +74,23 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
           // serialised row instead.
           break;
         case OpEntity.habit:
-          // Deliberately NOT folded, for the same reason as goals. POST /habits
-          // and PATCH /habits/:id return the RAW row — habitService attaches
-          // `stats` only via withHabitStats, which the list and sync paths call
-          // and these two do not — and Habit.fromJson substitutes
-          // HabitStats.empty() when it is missing. Upserting an ack would blank
-          // the streak and month rate to zero until the next full fetch. The
-          // post-drain delta carries the properly serialised row instead.
+          // A CHECK-IN's ack is folded; every other habit ack is not, and the
+          // difference is what the response actually contains.
+          //
+          // POST /habits and PATCH /habits/:id return the RAW row — withHabitStats
+          // runs only on the list and sync paths — and Habit.fromJson substitutes
+          // HabitStats.empty() when `stats` is missing, so upserting one would
+          // blank the streak to zero. checkInHabit returns the habit WITH
+          // recomputed stats, which is the whole point of that endpoint.
+          //
+          // And here folding is not merely safe, it is required: a check-in
+          // writes HabitCheckIn, never Habit, so the habit's own `updatedAt`
+          // does not move and the post-drain delta will not carry it back. Skip
+          // this and the tick the user just watched go on would come straight
+          // off again the moment the op left the queue.
+          if (kind == OpKind.checkInHabit) {
+            ref.read(habitsControllerProvider.notifier).upsertFromServer(row);
+          }
           break;
         case OpEntity.session:
           // Nothing to fold. The focus timer runs off local state and its

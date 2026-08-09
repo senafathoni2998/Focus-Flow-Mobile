@@ -1,21 +1,23 @@
 import '../../models/habit.dart';
+import '../date_format.dart';
 import 'queue_op.dart';
 
 /// The habits overlay — same shape and same reason as the task, list and goal
 /// ones: server truth lives underneath, so a refresh cannot erase a pending
 /// write.
 ///
-/// WHAT IS NOT PROJECTED. `stats` — streaks, this-month rate, today's amount —
-/// is computed by `habitStats.ts` from up to 1200 check-in rows the client is
-/// never sent, and every fold here carries it through UNCHANGED. Recomputing it
-/// locally would mean reimplementing a timezone-sensitive scorer against data
-/// this device does not have. Showing the last known streak while a rename is
-/// pending is honest; showing a guessed one is not.
+/// WHAT IS PROJECTED, AND WHERE THE LINE IS. A queued check-in moves exactly two
+/// numbers: `todayAmount` and `todayDone`. Both are functions of TODAY alone —
+/// `max(0, amount + delta)` and `habitStats.ts:isSatisfied` — so they can be
+/// computed here to the letter.
 ///
-/// `POST /habits/:id/checkin` is still NOT queued — see DECISIONS.md F7. It is a
-/// DELTA, and the reason it is refused was never the wire: offline the tile
-/// would not move, so the user taps again and produces two ops with two
-/// different keys. That needs a pending-delta badge, not just this overlay.
+/// `currentStreak`, `bestStreak`, `totalDays`, `monthlyRate` and `weeklyProgress`
+/// are NOT. Each walks the full check-in history, which this device is never
+/// sent (the endpoints compute stats from up to 1200 rows and then strip them).
+/// A streak "obviously" ticks up when today flips to done — unless yesterday was
+/// missed, which is exactly what the client cannot know. They are carried
+/// through. The tick moving is what the user needs to see; a fabricated 13-day
+/// streak is not.
 
 /// Build the habit JSON the server would have returned for a create body.
 ///
@@ -79,11 +81,44 @@ Map<String, dynamic> applyPatchToHabitJson(
   return out;
 }
 
+/// Apply one check-in delta to a habit row's `stats`, mirroring
+/// `checkInHabit` + `habitStats.ts:isSatisfied`.
+Map<String, dynamic> applyCheckInToHabitJson(
+  Map<String, dynamic> habit,
+  num delta,
+) {
+  final Map<String, dynamic> out = Map<String, dynamic>.from(habit);
+  final Object? raw = out['stats'];
+  // A habit created in this same offline stretch has no stats at all. Starting
+  // from empty is right: every other figure genuinely IS zero for a habit the
+  // server has never scored.
+  final Map<String, dynamic> stats =
+      raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+
+  final double current =
+      stats['todayAmount'] is num ? (stats['todayAmount'] as num).toDouble() : 0;
+  // The server's own clamp: a check-in can never drive the day negative.
+  final double next = (current + delta) < 0 ? 0 : current + delta;
+
+  // isSatisfied: an `amount` habit needs its target, everything else needs one.
+  final double target = out['goalType'] == 'amount'
+      ? (out['targetAmount'] is num ? (out['targetAmount'] as num).toDouble() : 1)
+      : 1;
+
+  stats['todayAmount'] = next;
+  stats['todayDone'] = next >= target;
+  out['stats'] = stats;
+  return out;
+}
+
+/// [now] is injectable only so the day-boundary rule can be tested; production
+/// callers leave it null.
 List<Habit> applyHabitQueue(
   List<Habit> server,
   List<QueuedOp> ops,
-  Map<String, String> idMap,
-) {
+  Map<String, String> idMap, {
+  DateTime? now,
+}) {
   final List<QueuedOp> ordered = ops
       .where((QueuedOp o) => o.entity == OpEntity.habit)
       .toList()
@@ -92,6 +127,11 @@ List<Habit> applyHabitQueue(
 
   final List<Map<String, dynamic>> rows =
       server.map((Habit h) => h.toJson()).toList();
+
+  // The same yyyy-MM-dd the controller freezes into a check-in body, so the two
+  // are comparing the same notion of "today" — the device's local calendar day,
+  // which is what the server converts to a UTC-midnight check-in date.
+  final String today = Dates.ymd(now ?? DateTime.now());
 
   int indexOf(String id) {
     final String mapped = idMap[id] ?? id;
@@ -140,6 +180,19 @@ List<Habit> applyHabitQueue(
           rows[i] = row;
         }
 
+      case OpKind.checkInHabit:
+        {
+          if (isDead) break; // the server never recorded it
+          final int i = indexOf(op.target);
+          final num? delta = deltaOf(op);
+          if (i < 0 || delta == null) break;
+          // ONLY today's tile. The op froze its day at enqueue, so one made last
+          // night and still unsent this morning belongs to YESTERDAY — folding
+          // it here would tick today's box for a day the user has not touched.
+          if (op.body?['date'] != today) break;
+          rows[i] = applyCheckInToHabitJson(rows[i], delta);
+        }
+
       case OpKind.deleteHabit:
         {
           if (isDead) break; // still on the server; show it again
@@ -161,6 +214,7 @@ List<Habit> applyHabitQueue(
       case OpKind.updateGoal:
       case OpKind.deleteGoal:
       case OpKind.setGoalStatus:
+      case OpKind.adjustGoalProgress:
         // Filtered out above; enumerated so a new entity cannot be added
         // without the compiler asking what this overlay should do about it.
         break;

@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
 import '../../core/offline/queue_flusher.dart';
-import '../../core/offline/queue_op.dart';
 import '../../core/offline/task_overlay.dart' show PendingState;
 import '../../models/habit.dart';
 import '../../providers/filter_provider.dart';
@@ -77,16 +76,19 @@ class _HabitCard extends ConsumerWidget {
     final s = habit.stats;
     final ctrl = ref.read(habitsControllerProvider.notifier);
 
-    // A habit whose create has not landed has no server row to check into, and
-    // check-in is online-only besides (DECISIONS.md F7). A control that can only
-    // fail is worse than one that is visibly unavailable, so it is disabled
-    // rather than left to throw — HabitsController.checkIn still refuses it, as
-    // the guard behind the guard.
-    final bool unsynced = isLocalId(habit.id);
-
-    Future<void> run(Future<void> Function() f) async {
+    // No longer disabled for an unsynced habit. A check-in is now a queued op
+    // that DEPENDS on the create, so the queue holds it until the real id
+    // exists and then substitutes it — checking in a habit you just made
+    // offline is the ordinary case, not an error.
+    Future<void> run(Future<SubmitOutcome> Function() f) async {
       try {
-        await f();
+        // Silent when it lands, a word when it does not. A toast on every tap of
+        // a +1 button would be worse than no feedback — the number moving IS the
+        // feedback, and the cloud badge says the rest.
+        final SubmitOutcome outcome = await f();
+        if (outcome == SubmitOutcome.deferred && context.mounted) {
+          showOfflineSaved(context);
+        }
       } catch (e) {
         if (context.mounted) showError(context, e);
       }
@@ -165,14 +167,12 @@ class _HabitCard extends ConsumerWidget {
               children: [
                 IconButton.filledTonal(
                   visualDensity: VisualDensity.compact,
-                  onPressed:
-                      unsynced ? null : () => run(() => ctrl.checkIn(habit.id, delta: -1)),
+                  onPressed: () => run(() => ctrl.checkIn(habit.id, delta: -1)),
                   icon: const Icon(Icons.remove),
                 ),
                 IconButton.filledTonal(
                   visualDensity: VisualDensity.compact,
-                  onPressed:
-                      unsynced ? null : () => run(() => ctrl.checkIn(habit.id, delta: 1)),
+                  onPressed: () => run(() => ctrl.checkIn(habit.id, delta: 1)),
                   icon: const Icon(Icons.add),
                 ),
               ],
@@ -180,9 +180,7 @@ class _HabitCard extends ConsumerWidget {
           else
             IconButton(
               iconSize: 34,
-              onPressed: unsynced
-                  ? null
-                  : () => run(() => ctrl.checkIn(habit.id, delta: s.todayDone ? -1 : 1)),
+              onPressed: () => run(() => ctrl.checkIn(habit.id, delta: s.todayDone ? -1 : 1)),
               icon: Icon(
                 s.todayDone ? Icons.check_circle : Icons.radio_button_unchecked,
                 color: s.todayDone ? color : scheme.outline,

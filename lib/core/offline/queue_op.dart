@@ -45,6 +45,27 @@ enum OpKind {
   updateHabit,
   deleteHabit,
   setHabitArchived,
+  // The two DELTAS. Every other queued write is an absolute assignment, which is
+  // why only these two carry a mandatory key and are the only ones that can be
+  // coalesced — see [isDeltaKind] and [coalesceDelta].
+  adjustGoalProgress,
+  checkInHabit,
+}
+
+/// True for the two ops that ADD to a value rather than setting it.
+///
+/// The distinction is load-bearing three times over: a delta must carry an
+/// idempotency key (a replayed "+20 pages" is progress the user never made), a
+/// delta may be merged with the one before it, and a delta must be projected
+/// arithmetically by its overlay rather than copied.
+bool isDeltaKind(OpKind kind) =>
+    kind == OpKind.adjustGoalProgress || kind == OpKind.checkInHabit;
+
+/// The signed amount a delta op carries, or null if it is not one / is malformed.
+num? deltaOf(QueuedOp op) {
+  if (!isDeltaKind(op.kind)) return null;
+  final Object? v = op.body?['delta'];
+  return v is num ? v : null;
 }
 
 /// What the flusher decided about one send.
@@ -237,12 +258,14 @@ class QueuedOp {
         OpKind.createGoal ||
         OpKind.updateGoal ||
         OpKind.deleteGoal ||
-        OpKind.setGoalStatus =>
+        OpKind.setGoalStatus ||
+        OpKind.adjustGoalProgress =>
           OpEntity.goal,
         OpKind.createHabit ||
         OpKind.updateHabit ||
         OpKind.deleteHabit ||
-        OpKind.setHabitArchived =>
+        OpKind.setHabitArchived ||
+        OpKind.checkInHabit =>
           OpEntity.habit,
       };
 
@@ -264,7 +287,9 @@ class QueuedOp {
         OpKind.createGoal ||
         OpKind.setGoalStatus ||
         OpKind.createHabit ||
-        OpKind.setHabitArchived =>
+        OpKind.setHabitArchived ||
+        OpKind.adjustGoalProgress ||
+        OpKind.checkInHabit =>
           'POST',
         OpKind.updateTask || OpKind.updateGoal || OpKind.updateHabit => 'PATCH',
         OpKind.deleteTask ||
@@ -511,9 +536,11 @@ Resolution resolve(QueuedOp op, Map<String, String> idMap) {
     OpKind.createGoal => '/goals',
     OpKind.updateGoal || OpKind.deleteGoal => '/goals/$target',
     OpKind.setGoalStatus => '/goals/$target/status',
+    OpKind.adjustGoalProgress => '/goals/$target/progress',
     OpKind.createHabit => '/habits',
     OpKind.updateHabit || OpKind.deleteHabit => '/habits/$target',
     OpKind.setHabitArchived => '/habits/$target/archive',
+    OpKind.checkInHabit => '/habits/$target/checkin',
   };
 
   final String? idPath = switch (op.kind) {
@@ -623,7 +650,9 @@ bool isDeleteKind(OpKind kind) => switch (kind) {
       OpKind.setGoalStatus ||
       OpKind.createHabit ||
       OpKind.updateHabit ||
-      OpKind.setHabitArchived =>
+      OpKind.setHabitArchived ||
+      OpKind.adjustGoalProgress ||
+      OpKind.checkInHabit =>
         false,
     };
 
@@ -688,6 +717,80 @@ List<QueuedOp>? cancelCreateThenDelete(List<QueuedOp> ops, String localId) {
   return ops.where((QueuedOp o) => !doomed.contains(o.id)).toList();
 }
 
+/// Merge a just-staged delta into the op immediately before it.
+///
+/// [ops] must already END with [staged], the same convention
+/// [cancelCreateThenDelete] uses. Returns the ops that remain, or null to change
+/// nothing.
+///
+/// WHY MERGE AT ALL. Eight taps on a water habit while offline is eight ops,
+/// eight round trips through a single-flight FIFO queue, and eight idempotency
+/// rows — with every other write the user makes stuck behind them. Merged, it is
+/// one request that says `+8`.
+///
+/// WHY IT IS SAFE, WHICH IS THE ONLY REASON IT IS ALLOWED:
+///   * `attempts == 0` — the previous op has never been on the wire, so nothing
+///     of it can exist on the server. This is the same guard
+///     `cancelCreateThenDelete` turns on, for the same reason.
+///   * NOT the op in flight. `attempts` does not cover that: it is incremented
+///     when a send FAILS, so an op awaiting its answer still reads 0.
+///   * A FRESH idempotency key. Both merged keys were minted and never used, so
+///     abandoning them costs nothing — and reusing one under a changed body is
+///     exactly the 422 that wedges a write permanently.
+///   * The frozen `date` must match. Two taps either side of midnight are two
+///     different days on the server and must stay two requests.
+///
+/// A sum of ZERO annihilates the pair: tapping + then − while offline should
+/// never reach the network at all.
+List<QueuedOp>? coalesceDelta(
+  List<QueuedOp> ops,
+  QueuedOp staged, {
+  String? inFlightOpId,
+  Random? rng,
+}) {
+  if (!isDeltaKind(staged.kind) || ops.length < 2) return null;
+  if (ops.last.id != staged.id) return null;
+
+  final QueuedOp prev = ops[ops.length - 2];
+  if (prev.kind != staged.kind || prev.target != staged.target) return null;
+  if (prev.attempts != 0 || prev.id == inFlightOpId) return null;
+  if (prev.body?['date'] != staged.body?['date']) return null;
+
+  final num? a = deltaOf(prev);
+  final num? b = deltaOf(staged);
+  if (a == null || b == null) return null;
+
+  final List<QueuedOp> head = ops.sublist(0, ops.length - 2);
+  final num sum = a + b;
+  if (sum == 0) return head;
+
+  final Map<String, dynamic> body = <String, dynamic>{
+    ...?prev.body,
+    'delta': sum,
+  };
+  return <QueuedOp>[
+    ...head,
+    QueuedOp(
+      // The EARLIER op's id and seq are kept: it holds the FIFO position the
+      // merged intent started at, and the badge on screen is already keyed to
+      // that id. Its createdAtMs is kept too, so expiry counts from the first
+      // tap rather than being pushed back by every one after it.
+      id: prev.id,
+      seq: prev.seq,
+      kind: prev.kind,
+      target: prev.target,
+      deps: prev.deps,
+      body: body,
+      key: newIdempotencyKey(rng: rng),
+      // Rebuilt so the AMOUNT is right. One dead letter can now stand for five
+      // taps, and "Discard" on it drops all five — the row has to say so.
+      summary:
+          '${_deltaVerb(prev.kind)} ${_signed(body)}${_subjectTail(prev.summary)}',
+      createdAtMs: prev.createdAtMs,
+    ),
+  ];
+}
+
 /// The key a queued edit uses to say which version it was based on.
 const String kPreconditionKey = 'expectedUpdatedAt';
 
@@ -734,12 +837,14 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.createGoal ||
     OpKind.updateGoal ||
     OpKind.deleteGoal ||
-    OpKind.setGoalStatus =>
+    OpKind.setGoalStatus ||
+    OpKind.adjustGoalProgress =>
       'goal',
     OpKind.createHabit ||
     OpKind.updateHabit ||
     OpKind.deleteHabit ||
-    OpKind.setHabitArchived =>
+    OpKind.setHabitArchived ||
+    OpKind.checkInHabit =>
       'habit',
   };
   final String subject = label.isEmpty ? 'a $noun' : '"$label"';
@@ -766,5 +871,35 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.setHabitArchived => body?['archived'] == false
         ? 'Restore habit $subject'
         : 'Archive habit $subject',
+    // The AMOUNT is in the text, not just the verb. These are the only two ops
+    // that can be merged, so by the time one fails it may represent five taps —
+    // "Check in" would understate what the user is being asked to retry.
+    OpKind.adjustGoalProgress => 'Progress ${_signed(body)} on goal $subject',
+    OpKind.checkInHabit => 'Check in ${_signed(body)} on habit $subject',
   };
+}
+
+String _deltaVerb(OpKind kind) =>
+    kind == OpKind.checkInHabit ? 'Check in' : 'Progress';
+
+/// The trailing `on habit "Drink water"` of a delta summary.
+///
+/// The entity's NAME is nowhere on the op — it is baked into the summary at
+/// enqueue precisely because by the time an op fails the row it names may not
+/// exist anywhere the UI can look up. A merge therefore rebuilds the text from
+/// the earlier op's own tail. Both halves are generated in this file, a few
+/// lines apart, so the coupling cannot drift unnoticed.
+///
+/// FIRST occurrence, deliberately: the separator always precedes the name, so a
+/// habit called "Read on the train" still splits in the right place.
+String _subjectTail(String summary) {
+  final int at = summary.indexOf(' on ');
+  return at >= 0 ? summary.substring(at) : '';
+}
+
+String _signed(Map<String, dynamic>? body) {
+  final Object? v = body?['delta'];
+  if (v is! num) return '';
+  final String n = v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+  return v > 0 ? '+$n' : n;
 }

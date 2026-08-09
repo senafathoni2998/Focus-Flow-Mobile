@@ -1,6 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../core/api_exception.dart';
+import '../core/date_format.dart';
 import '../core/offline/queue_flusher.dart';
 import '../core/offline/queue_op.dart';
 import '../data/habit_repository.dart';
@@ -192,26 +192,57 @@ class HabitsController extends StateNotifier<AsyncValue<List<Habit>>> {
     return outcome;
   }
 
-  /// Check in [delta] (default +1) today. ONLINE-ONLY, still — see DECISIONS.md
-  /// F7. The wire is safe (the route is key-wrapped), but offline the tile would
-  /// not move, so the user taps again and produces two ops with two DIFFERENT
-  /// keys. An idempotency key defends against retry duplication, never against
-  /// duplicate intent our own UI manufactured. What is still missing is a
-  /// "+2 pending" badge on the card.
-  Future<void> checkIn(String id, {int delta = 1}) async {
-    // A habit created offline has no server row yet, so its id is still a
-    // `local_` placeholder and this would POST to /habits/local_…/checkin — a
-    // 404 the user could not act on. The id map resolves it once the create has
-    // landed; until then, say so plainly.
-    final resolved = _ref.read(queueIdMapProvider)[id] ?? id;
-    if (isLocalId(resolved)) {
-      throw ApiException(
-          "This habit hasn't been saved to the server yet — check in once it syncs.");
+  /// Fold one acked row into server truth, leaving the overlay to be recomputed.
+  ///
+  /// Only a CHECK-IN reaches this — see the habit case in write_queue_provider.
+  void upsertFromServer(Map<String, dynamic> row) {
+    final h = Habit.fromJson(row);
+    if (h.id.isEmpty) return;
+    final list = [..._current];
+    final i = list.indexWhere((x) => x.id == h.id);
+    if (i >= 0) {
+      list[i] = h;
+    } else if (!h.archived) {
+      list.add(h);
     }
-    final h = await _repo.checkIn(resolved, delta: delta);
     _gen++;
-    state = AsyncValue.data(
-        [for (final x in _current) if (x.id == resolved) h else x]);
+    state = AsyncValue.data(list);
+  }
+
+  /// Check in [delta] (default +1) for today.
+  ///
+  /// QUEUED, finally. The refusal was never about the wire — the route is
+  /// key-wrapped — it was that offline the tile did not move, so the user tapped
+  /// again and produced two ops with two DIFFERENT keys. The overlay now moves
+  /// it, and consecutive taps merge into one op, so that second tap cannot
+  /// happen for the reason it used to.
+  Future<SubmitOutcome> checkIn(String id, {int delta = 1}) async {
+    // THE DAY IS FROZEN HERE, and it is the whole reason this needed care. The
+    // server defaults an absent `date` to ITS today, so a tap at 23:50 that
+    // sends at 00:05 would be recorded against tomorrow — Monday goes unchecked
+    // and Tuesday counts twice, quietly breaking a streak the user did earn.
+    // Same defect the focus timer's frozen startTime exists to prevent.
+    final body = <String, dynamic>{
+      'delta': delta,
+      'date': Dates.ymd(DateTime.now()),
+    };
+    final op = QueuedOp(
+      id: newOpId(),
+      seq: 0,
+      kind: OpKind.checkInHabit,
+      target: id,
+      // A habit created in this same offline stretch is checkable in: the queue
+      // blocks this op until the create resolves and then substitutes the real
+      // id. That is why the card no longer disables the control.
+      deps: isLocalId(id) ? <String>[id] : const <String>[],
+      body: body,
+      // MANDATORY. This is a delta: a replayed +1 is a check-in the user never
+      // made, and it feeds streaks and the month rate from there on.
+      key: newIdempotencyKey(),
+      summary: summaryFor(OpKind.checkInHabit, body, _nameOf(id)),
+      createdAtMs: _now,
+    );
+    return (await _queue.submit(op)).outcome;
   }
 }
 

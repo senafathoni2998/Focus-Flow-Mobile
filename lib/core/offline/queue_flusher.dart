@@ -638,6 +638,7 @@ class QueueFlusher {
       OpEntity.list => 'list',
       OpEntity.session => 'session',
       OpEntity.goal => 'goal',
+      OpEntity.habit => 'habit',
     };
     final Object? row = res.body?[envelope];
     if (row is Map) _onServerRow(op.entity, Map<String, dynamic>.from(row));

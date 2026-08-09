@@ -86,6 +86,10 @@ List<TaskList> applyListQueue(
       case OpKind.updateGoal:
       case OpKind.deleteGoal:
       case OpKind.setGoalStatus:
+      case OpKind.createHabit:
+      case OpKind.updateHabit:
+      case OpKind.deleteHabit:
+      case OpKind.setHabitArchived:
         // Filtered out above; enumerated so a new entity cannot be added
         // without the compiler asking what this overlay should do about it.
         break;

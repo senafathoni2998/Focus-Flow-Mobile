@@ -4,11 +4,14 @@ import '../core/constants.dart';
 import '../core/horizons.dart';
 import '../models/task.dart';
 import '../core/offline/goal_overlay.dart';
+import '../core/offline/habit_overlay.dart';
 import '../core/offline/list_overlay.dart';
 import '../core/offline/task_overlay.dart';
 import '../models/goal.dart';
+import '../models/habit.dart';
 import '../models/task_list.dart';
 import 'goals_provider.dart';
+import 'habits_provider.dart';
 import 'lists_provider.dart';
 import 'tasks_provider.dart';
 import 'write_queue_provider.dart';
@@ -110,6 +113,17 @@ final allGoalsProvider = Provider<List<Goal>>((ref) {
   final idMap = ref.watch(queueIdMapProvider);
   if (pending.isEmpty && dead.isEmpty) return server;
   return applyGoalQueue(server, [...pending, ...dead], idMap);
+});
+
+/// Server truth for habits with pending writes folded on top. Every habit reader
+/// watches this, never `habitsControllerProvider` directly.
+final allHabitsProvider = Provider<List<Habit>>((ref) {
+  final server = ref.watch(habitsControllerProvider).value ?? const <Habit>[];
+  final pending = ref.watch(pendingOpsProvider);
+  final dead = ref.watch(deadOpsProvider);
+  final idMap = ref.watch(queueIdMapProvider);
+  if (pending.isEmpty && dead.isEmpty) return server;
+  return applyHabitQueue(server, [...pending, ...dead], idMap);
 });
 
 /// The filtered + sorted top-level tasks for the current selection.

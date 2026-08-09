@@ -11,6 +11,7 @@ import '../data/sync_repository.dart';
 import 'providers.dart';
 import 'dashboard_provider.dart';
 import 'goals_provider.dart';
+import 'habits_provider.dart';
 import 'lists_provider.dart';
 import 'session_provider.dart';
 import 'tags_provider.dart';
@@ -72,6 +73,15 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
           // until the next full fetch. The post-drain delta carries the properly
           // serialised row instead.
           break;
+        case OpEntity.habit:
+          // Deliberately NOT folded, for the same reason as goals. POST /habits
+          // and PATCH /habits/:id return the RAW row — habitService attaches
+          // `stats` only via withHabitStats, which the list and sync paths call
+          // and these two do not — and Habit.fromJson substitutes
+          // HabitStats.empty() when it is missing. Upserting an ack would blank
+          // the streak and month rate to zero until the next full fetch. The
+          // post-drain delta carries the properly serialised row instead.
+          break;
         case OpEntity.session:
           // Nothing to fold. The focus timer runs off local state and its
           // complete/cancel ops reference the session by its LOCAL id, which the
@@ -126,6 +136,9 @@ Future<void> _reconcileAfterDrain(Ref ref, Set<OpEntity> touched) async {
     ref.read(goalsControllerProvider.notifier).applyServerDelta(
         delta.goals, deletedOf('goal'),
         full: delta.full);
+    ref.read(habitsControllerProvider.notifier).applyServerDelta(
+        delta.habits, deletedOf('habit'),
+        full: delta.full);
 
     if (touched.contains(OpEntity.session)) {
       // A completed pomodoro changes a task's actualMin and the dashboard's
@@ -175,6 +188,9 @@ final taskPendingStateProvider =
 
 final listPendingStateProvider =
     Provider<Map<String, PendingState>>((ref) => _badges(ref, OpEntity.list));
+
+final habitPendingStateProvider =
+    Provider<Map<String, PendingState>>((ref) => _badges(ref, OpEntity.habit));
 
 /// Mounted once above the screen swap, beside the reminder poller.
 ///

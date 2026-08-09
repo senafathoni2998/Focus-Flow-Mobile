@@ -355,7 +355,17 @@ void main() {
 
     test('an unknown kind is dropped, not thrown', () {
       // One bad row must not cost the user the rest of the queue.
-      expect(QueuedOp.fromJson(<String, dynamic>{'kind': 'createHabit', 'id': 'x', 'seq': 1}),
+      //
+      // The placeholder is deliberately NOT the next feature someone might
+      // build. It used to be 'createHabit', which stopped meaning anything the
+      // day the habit queue landed — this test went red and said so, which is
+      // the only reason it was noticed.
+      expect(
+          QueuedOp.fromJson(<String, dynamic>{
+            'kind': 'notAKindAnyBuildWillEverHave',
+            'id': 'x',
+            'seq': 1,
+          }),
           isNull);
       expect(QueuedOp.fromJson(<String, dynamic>{'kind': 'createTask'}), isNull);
     });

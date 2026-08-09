@@ -18,7 +18,7 @@ import 'dart:math';
 
 /// Which entity an op acts on. Derived from [OpKind] rather than stored, so the
 /// two can never disagree on disk.
-enum OpEntity { task, list, session, goal }
+enum OpEntity { task, list, session, goal, habit }
 
 /// Every queued write. Everything NOT here is online-only on purpose; see
 /// DECISIONS.md F7 for the per-operation refusals and the reason for each.
@@ -41,6 +41,10 @@ enum OpKind {
   updateGoal,
   deleteGoal,
   setGoalStatus,
+  createHabit,
+  updateHabit,
+  deleteHabit,
+  setHabitArchived,
 }
 
 /// What the flusher decided about one send.
@@ -235,6 +239,11 @@ class QueuedOp {
         OpKind.deleteGoal ||
         OpKind.setGoalStatus =>
           OpEntity.goal,
+        OpKind.createHabit ||
+        OpKind.updateHabit ||
+        OpKind.deleteHabit ||
+        OpKind.setHabitArchived =>
+          OpEntity.habit,
       };
 
   /// True for any delete, whatever the entity.
@@ -253,10 +262,16 @@ class QueuedOp {
         OpKind.completeSession ||
         OpKind.cancelSession ||
         OpKind.createGoal ||
-        OpKind.setGoalStatus =>
+        OpKind.setGoalStatus ||
+        OpKind.createHabit ||
+        OpKind.setHabitArchived =>
           'POST',
-        OpKind.updateTask || OpKind.updateGoal => 'PATCH',
-        OpKind.deleteTask || OpKind.deleteList || OpKind.deleteGoal => 'DELETE',
+        OpKind.updateTask || OpKind.updateGoal || OpKind.updateHabit => 'PATCH',
+        OpKind.deleteTask ||
+        OpKind.deleteList ||
+        OpKind.deleteGoal ||
+        OpKind.deleteHabit =>
+          'DELETE',
       };
 
   bool get carriesKey => key != null;
@@ -436,6 +451,11 @@ const List<String> kIdBearingBodyKeys = <String>[
   // offline nothing could produce a local goal id, and an entry for it would
   // have been protection that looked real and covered nothing.
   'goalId',
+  // NO `habitId`, and that is the same rule applied a fourth time rather than an
+  // oversight. Nothing in this API puts a habit id in a request BODY — every
+  // habit route names it in the path, which `resolve` substitutes through
+  // `op.target`. An entry here would be protection that looks real and covers
+  // nothing. It goes in if and when a body is ever built that references one.
 ];
 
 /// Substitute local ids into a throwaway request. Returns [Resolution.blocked]
@@ -491,6 +511,9 @@ Resolution resolve(QueuedOp op, Map<String, String> idMap) {
     OpKind.createGoal => '/goals',
     OpKind.updateGoal || OpKind.deleteGoal => '/goals/$target',
     OpKind.setGoalStatus => '/goals/$target/status',
+    OpKind.createHabit => '/habits',
+    OpKind.updateHabit || OpKind.deleteHabit => '/habits/$target',
+    OpKind.setHabitArchived => '/habits/$target/archive',
   };
 
   final String? idPath = switch (op.kind) {
@@ -498,6 +521,7 @@ Resolution resolve(QueuedOp op, Map<String, String> idMap) {
     OpKind.createList => 'list.id',
     OpKind.createSession => 'session.id',
     OpKind.createGoal => 'goal.id',
+    OpKind.createHabit => 'habit.id',
     _ => null,
   };
 
@@ -582,7 +606,11 @@ bool isDue(QueuedOp op, int nowMs) {
 /// neither form is exhaustive-checked. Now there is one definition and the
 /// compiler asks about every new kind.
 bool isDeleteKind(OpKind kind) => switch (kind) {
-      OpKind.deleteTask || OpKind.deleteList || OpKind.deleteGoal => true,
+      OpKind.deleteTask ||
+      OpKind.deleteList ||
+      OpKind.deleteGoal ||
+      OpKind.deleteHabit =>
+        true,
       OpKind.createTask ||
       OpKind.updateTask ||
       OpKind.completeTask ||
@@ -592,7 +620,10 @@ bool isDeleteKind(OpKind kind) => switch (kind) {
       OpKind.cancelSession ||
       OpKind.createGoal ||
       OpKind.updateGoal ||
-      OpKind.setGoalStatus =>
+      OpKind.setGoalStatus ||
+      OpKind.createHabit ||
+      OpKind.updateHabit ||
+      OpKind.setHabitArchived =>
         false,
     };
 
@@ -705,6 +736,11 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.deleteGoal ||
     OpKind.setGoalStatus =>
       'goal',
+    OpKind.createHabit ||
+    OpKind.updateHabit ||
+    OpKind.deleteHabit ||
+    OpKind.setHabitArchived =>
+      'habit',
   };
   final String subject = label.isEmpty ? 'a $noun' : '"$label"';
   return switch (kind) {
@@ -721,5 +757,14 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.updateGoal => 'Edit goal $subject',
     OpKind.deleteGoal => 'Delete goal $subject',
     OpKind.setGoalStatus => 'Change goal status $subject',
+    OpKind.createHabit => 'New habit $subject',
+    OpKind.updateHabit => 'Edit habit $subject',
+    OpKind.deleteHabit => 'Delete habit $subject',
+    // One op kind covers both directions, so the summary has to read the body to
+    // say which one. "Archive"/"Restore" of a habit that has already vanished
+    // from every list is the only description the user will ever get of it.
+    OpKind.setHabitArchived => body?['archived'] == false
+        ? 'Restore habit $subject'
+        : 'Archive habit $subject',
   };
 }

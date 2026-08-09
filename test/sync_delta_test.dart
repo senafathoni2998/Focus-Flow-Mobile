@@ -20,8 +20,6 @@ void main() {
           'tags': <Map<String, dynamic>>[
             <String, dynamic>{'id': 'tag1', 'name': 'errands'}
           ],
-          // Present in the payload, not consumed here — the queue only writes
-          // tasks and lists, so nothing else can be stale from a drain.
           'habits': <Map<String, dynamic>>[
             <String, dynamic>{'id': 'h1'}
           ],
@@ -37,6 +35,10 @@ void main() {
       expect(d.tasks.single['id'], 't1');
       expect(d.lists.single['id'], 'l1');
       expect(d.tags.single['id'], 'tag1');
+      // Read since the habit queue landed. The server has always sent these;
+      // for three phases nothing parsed them, so the post-drain reconcile could
+      // not have picked up a habit created offline at all.
+      expect(d.habits.single['id'], 'h1');
       expect(d.deleted.length, 2);
       expect(d.deleted.first.type, 'task');
       expect(d.deleted.first.id, 'gone1');

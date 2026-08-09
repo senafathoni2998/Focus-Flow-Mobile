@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/api_exception.dart';
 import '../data/goal_repository.dart';
 import '../models/goal.dart';
 import '../core/offline/queue_flusher.dart';
@@ -72,7 +73,11 @@ class GoalsController extends StateNotifier<AsyncValue<List<Goal>>> {
   }) {
     if (full) {
       _gen++;
-      state = AsyncValue.data(rows.map(Goal.fromJson).toList());
+      // `/sync` returns EVERY goal, where `getGoals` filters `status != archived`
+      // — the list this controller holds. Without the filter a full sync would
+      // resurrect archived goals onto the Goals tab.
+      state = AsyncValue.data(
+          rows.map(Goal.fromJson).where((g) => g.status != 'archived').toList());
       return;
     }
     if (rows.isEmpty && deletedIds.isEmpty) return;
@@ -80,6 +85,13 @@ class GoalsController extends StateNotifier<AsyncValue<List<Goal>>> {
     for (final row in rows) {
       final g = Goal.fromJson(row);
       final i = list.indexWhere((x) => x.id == g.id);
+      // Archiving is a REMOVAL from this list, not an update to it. The row is
+      // still alive on the server so it gets no tombstone, and upserting it
+      // would leave an archived goal sitting on the board as a ghost.
+      if (g.status == 'archived') {
+        if (i >= 0) list.removeAt(i);
+        continue;
+      }
       if (i >= 0) {
         list[i] = g;
       } else {
@@ -149,7 +161,16 @@ class GoalsController extends StateNotifier<AsyncValue<List<Goal>>> {
   /// against duplicate intent our own UI manufactured. The overlay now exists;
   /// what is still missing is a "+2 pending" badge on the card.
   Future<void> adjustProgress(String id, num delta) async {
-    await _repo.adjustProgress(id, delta);
+    // A goal created offline has no server row yet, so its id is still a
+    // `local_` placeholder and this would POST to /goals/local_…/progress — a
+    // 404 the user could do nothing about. The id map resolves it once the
+    // create has landed; until then, say so plainly instead.
+    final resolved = _ref.read(queueIdMapProvider)[id] ?? id;
+    if (isLocalId(resolved)) {
+      throw ApiException(
+          "This goal hasn't been saved to the server yet — adjust it once it syncs.");
+    }
+    await _repo.adjustProgress(resolved, delta);
     await reload();
   }
 

@@ -145,6 +145,10 @@ List<Goal> applyGoalQueue(
       case OpKind.createSession:
       case OpKind.completeSession:
       case OpKind.cancelSession:
+      case OpKind.createHabit:
+      case OpKind.updateHabit:
+      case OpKind.deleteHabit:
+      case OpKind.setHabitArchived:
         // Filtered out above; enumerated so a new entity cannot be added
         // without the compiler asking what this overlay should do about it.
         break;

@@ -1,4 +1,4 @@
-package com.focusflow.focusflow_mobile
+package com.focusflow.mobile
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager

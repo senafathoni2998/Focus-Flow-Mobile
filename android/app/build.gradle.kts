@@ -28,7 +28,7 @@ fun keystoreProperty(name: String): String =
         ?: throw GradleException("android/key.properties has no usable '$name'")
 
 android {
-    namespace = "com.focusflow.focusflow_mobile"
+    namespace = "com.focusflow.mobile"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -44,8 +44,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.focusflow.focusflow_mobile"
+        // Permanent once the first bundle reaches Play, so it was settled before
+        // Step 1 of the release runbook rather than after — see DECISIONS.md F6.
+        applicationId = "com.focusflow.mobile"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

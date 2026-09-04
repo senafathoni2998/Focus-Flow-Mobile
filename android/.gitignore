@@ -12,3 +12,9 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Gradle writes reports here even though android/build.gradle.kts relocates the real
+# output to the Flutter project's build/ — and the root .gitignore's /build/ is anchored
+# to the repo root, so it does not cover this one.
+/build/
+/.kotlin/

@@ -85,9 +85,15 @@ The root swaps Login ↔ app shell on auth state; sub-screens use `Navigator.pus
 couldn't compile-check here. *Alternative:* `go_router` (nicer deep links) — add later
 if you want deep links / widget shortcuts.
 
-**F3. `DropdownButtonFormField` uses `value:` (not `initialValue:`).** ✅
-`value:` compiles on essentially every Flutter version; `initialValue:` only exists on
-very recent SDKs. A deprecation warning at worst.
+**F3. `DropdownButtonFormField` uses `initialValue:` (not `value:`).** ✅
+Reversed. The original reason — `initialValue:` only exists on very recent SDKs — stopped
+applying once the project settled on Flutter 3.44, and by then `value:` was a deprecation
+that `flutter analyze` fails on under its default `--fatal-infos`. That would have taken
+the release workflow down before it ever reached the signing step, and looked like a CI
+fault rather than a lint. The rename is behaviour-preserving: the constructor forwards
+`initialValue ?? value` to `FormField` and `didUpdateWidget` compares the resolved field,
+so the three call sites that fall back to null while a list is still loading (F5's
+refresh-based freshness) keep updating on rebuild exactly as before.
 
 **F4. Offline-capable, at the HTTP boundary — no local database.** ✅
 Superseded the original "online-first" position in two steps: successful GETs are cached
@@ -104,8 +110,14 @@ refreshes on **tab switch** and **pull-to-refresh**. *Why:* avoids tight cross-p
 coupling. *Alternative:* invalidate goals/dashboard on every task mutation — snappier but
 more coupling/flicker. Easy to add if you want it.
 
-**F6. App identity:** package `com.focusflow`, name "FocusFlow Mobile", version `1.0.0+1`. ⚠️
-Fine for sideloading. **❓ Change the package id before any Play Store upload.**
+**F6. App identity:** package `com.focusflow.mobile`, name "FocusFlow Mobile", version
+`1.0.0+1`. ✅
+Settled, because the first Play upload is the last moment it is free: an applicationId is
+permanent once a bundle is published. Was `com.focusflow.focusflow_mobile`, the stock
+Flutter value, which stuttered. `namespace` moved with it, so the two Kotlin sources now
+live under `com/focusflow/mobile/`; the manifest refers to them relatively (`.MainActivity`,
+`.FocusFlowWidgetProvider`) and the widget uses `context.packageName` at runtime, so nothing
+had a copy of the old id to leave stale.
 
 ---
 

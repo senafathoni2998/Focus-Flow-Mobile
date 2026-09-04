@@ -342,7 +342,7 @@ class _HabitEditorScreenState extends ConsumerState<HabitEditorScreen> {
           const SizedBox(height: 20),
           _label('Frequency'),
           DropdownButtonFormField<String>(
-            value: _frequencyType,
+            initialValue: _frequencyType,
             decoration: const InputDecoration(),
             items: const [
               DropdownMenuItem(value: 'daily', child: Text('Every day')),

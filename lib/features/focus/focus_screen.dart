@@ -86,7 +86,7 @@ class FocusScreen extends ConsumerWidget {
 
           if (s.type == 'pomodoro')
             DropdownButtonFormField<String?>(
-              value: openTasks.any((t) => t.id == s.taskId) ? s.taskId : null,
+              initialValue: openTasks.any((t) => t.id == s.taskId) ? s.taskId : null,
               decoration: const InputDecoration(labelText: 'Working on (optional)'),
               items: [
                 const DropdownMenuItem(value: null, child: Text('Nothing in particular')),

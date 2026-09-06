@@ -28,4 +28,12 @@ class AuthRepository {
     final data = await _api.getJson('/auth/me');
     return User.fromJson(asMap(asMap(data)['user']));
   }
+
+  /// DELETE /auth/me — the account and everything it owns.
+  ///
+  /// The password is sent again on purpose: a bearer token alone, on a phone
+  /// left unlocked, must not be enough to erase an account.
+  Future<void> deleteAccount(String password) async {
+    await _api.deleteJson('/auth/me', body: {'password': password});
+  }
 }

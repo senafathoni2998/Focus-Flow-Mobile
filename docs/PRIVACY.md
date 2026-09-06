@@ -38,9 +38,12 @@ builds refuse cleartext to any host other than a device-local address.
 
 ## Deleting your data
 
-Your data lives on your server. Delete it there (the web app can export the whole
-account as JSON, and the account can be deleted by the server's administrator).
-Uninstalling the app removes the device cache and stored tokens.
+**Settings → Delete account**, in this app or in the web app, removes the
+account and everything in it immediately and permanently — see
+[DELETE_ACCOUNT.md](DELETE_ACCOUNT.md) for the exact steps and for what to do
+if you can no longer sign in. The web app can export the whole account as JSON
+first. Uninstalling the app alone removes only the device cache and stored
+tokens.
 
 ## Contact
 
@@ -57,7 +60,7 @@ submitting; Play treats them as your declaration.
 |---|---|---|
 | Does your app collect or share any of the required user data types? | **Yes** — see below. (Data leaves the device to a server *the user chooses*.) | Play's definition of "collected" is "transmitted off the device"; it does not matter who runs the server. |
 | Is all user data encrypted in transit? | **No** | Only when the user's server uses https. Answer honestly. |
-| Do you provide a way for users to request data deletion? | **Yes** — via their own server / administrator | State the mechanism above. |
+| Do you provide a way for users to request data deletion? | **Yes** — in-app (Settings → Delete account) and via `https://github.com/senafathoni2998/Focus-Flow-Mobile/blob/main/docs/DELETE_ACCOUNT.md` | Play asks for the URL in the Data safety form. |
 | Personal info → Email address | Collected, required, purpose: **Account management** | Sign-in. |
 | App activity → Other user-generated content | Collected, required, purpose: **App functionality** | Tasks, habits, goals, notes. |
 | App info and performance → Crash logs / Diagnostics | **Not collected** | No crash reporting SDK. |

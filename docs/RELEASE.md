@@ -73,7 +73,8 @@ hand upload must sit below them.
    - *Ads* → No. *Content rating* → fill the questionnaire (productivity, no
      user-generated public content). *Target audience* → 18+ (or 13+; either
      avoids the families programme). *News app* → No. *Data safety* → transcribe
-     the section at the bottom of `PRIVACY.md`. *Government / financial / health*
+     the section at the bottom of `PRIVACY.md`; the account-deletion URL it asks for is
+     `https://github.com/senafathoni2998/Focus-Flow-Mobile/blob/main/docs/DELETE_ACCOUNT.md`. *Government / financial / health*
      → No.
 3. **Store listing**: short + full description, a **512×512 icon**, a
    **1024×500 feature graphic**, and at least **two phone screenshots**. These

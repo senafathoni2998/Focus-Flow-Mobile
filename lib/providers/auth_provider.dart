@@ -172,6 +172,17 @@ class AuthController extends StateNotifier<AuthState> {
     state = const AuthState(status: AuthStatus.unauthenticated);
   }
 
+  /// Delete the account on the server, then leave locally.
+  ///
+  /// The write queue is DISCARDED, not retained as on sign-out: the retention
+  /// rule exists because the queue is the user's own unsent work that will
+  /// flush when they sign back in — and there is no account to sign back
+  /// into. The caller shows the count before asking for the password.
+  Future<void> deleteAccount(String password) async {
+    await _ref.read(authRepositoryProvider).deleteAccount(password);
+    await logout(discardUnsent: true);
+  }
+
   /// Invoked by the API client when a token refresh fails mid-session.
   void onSessionExpired() {
     if (state.status != AuthStatus.unauthenticated) {

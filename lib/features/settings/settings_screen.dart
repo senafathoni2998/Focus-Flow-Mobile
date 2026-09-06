@@ -126,6 +126,22 @@ class SettingsScreen extends ConsumerWidget {
               ),
             ),
           ),
+          const SizedBox(height: 8),
+          // Google Play requires an in-app way to delete the account for any app
+          // that can create one. Quieter than Sign out on purpose — a text
+          // button, not a filled one — and it asks for the password again.
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextButton.icon(
+              onPressed: () => _deleteAccount(context, ref),
+              icon: const Icon(Icons.delete_forever_outlined),
+              label: const Text('Delete account'),
+              style: TextButton.styleFrom(
+                minimumSize: const Size.fromHeight(44),
+                foregroundColor: Theme.of(context).colorScheme.error,
+              ),
+            ),
+          ),
           const SizedBox(height: 24),
         ],
       ),
@@ -209,4 +225,74 @@ Future<bool?> _confirmSignOutWithUnsent(
       ],
     ),
   );
+}
+
+/// Explain what is about to happen, then ask for the password.
+///
+/// The unsent count is part of the explanation, not an afterthought: those
+/// writes are the one thing deletion destroys that the server never had.
+Future<void> _deleteAccount(BuildContext context, WidgetRef ref) async {
+  final unsent = ref.read(unsentCountProvider);
+  final email = ref.read(authControllerProvider).user?.email ?? 'this account';
+  final controller = TextEditingController();
+  // Captured before any await: once the account is gone the auth state flips
+  // and this screen is replaced, so its own context can no longer show anything.
+  final messenger = ScaffoldMessenger.maybeOf(context);
+
+  final password = await showDialog<String>(
+    context: context,
+    builder: (ctx) {
+      final scheme = Theme.of(ctx).colorScheme;
+      return AlertDialog(
+        title: const Text('Delete account?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Permanently deletes $email and everything in it — tasks, habits and '
+              'check-ins, goals, focus sessions, reminders. This cannot be undone.',
+            ),
+            if (unsent > 0) ...[
+              const SizedBox(height: 8),
+              Text(
+                '$unsent unsent change${unsent == 1 ? '' : 's'} on this phone will be '
+                'discarded too.',
+                style: TextStyle(color: scheme.error, fontWeight: FontWeight.w600),
+              ),
+            ],
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              obscureText: true,
+              autofocus: true,
+              autocorrect: false,
+              decoration: const InputDecoration(labelText: 'Your password'),
+              onSubmitted: (v) => Navigator.of(ctx).pop(v.trim().isEmpty ? null : v),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(null), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: scheme.error),
+            onPressed: () {
+              final v = controller.text;
+              Navigator.of(ctx).pop(v.trim().isEmpty ? null : v);
+            },
+            child: const Text('Delete permanently'),
+          ),
+        ],
+      );
+    },
+  );
+  controller.dispose();
+  if (password == null) return;
+
+  try {
+    await ref.read(authControllerProvider.notifier).deleteAccount(password);
+    messenger?.showSnackBar(const SnackBar(content: Text('Account deleted')));
+  } catch (e) {
+    if (context.mounted) showError(context, e);
+  }
 }

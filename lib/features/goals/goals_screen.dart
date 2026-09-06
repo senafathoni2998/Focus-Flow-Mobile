@@ -405,7 +405,7 @@ class _GoalEditorScreenState extends ConsumerState<GoalEditorScreen> {
           const SizedBox(height: 20),
           _label('Track progress by'),
           DropdownButtonFormField<String>(
-            value: _progressType,
+            initialValue: _progressType,
             decoration: const InputDecoration(),
             items: const [
               DropdownMenuItem(value: 'manual', child: Text('Manual percentage')),

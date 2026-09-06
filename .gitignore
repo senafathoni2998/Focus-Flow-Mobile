@@ -37,7 +37,7 @@ pubspec.lock
 /android/captures/
 /android/local.properties
 /android/**/GeneratedPluginRegistrant.*
-/android/key.properties
+key.properties
 *.keystore
 *.jks
 

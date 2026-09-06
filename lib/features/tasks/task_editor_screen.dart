@@ -235,7 +235,7 @@ class _TaskEditorScreenState extends ConsumerState<TaskEditorScreen> {
           const SizedBox(height: 20),
           _label('Repeat'),
           DropdownButtonFormField<String?>(
-            value: _recurrence,
+            initialValue: _recurrence,
             decoration: const InputDecoration(),
             items: [
               const DropdownMenuItem(value: null, child: Text('Does not repeat')),
@@ -249,7 +249,7 @@ class _TaskEditorScreenState extends ConsumerState<TaskEditorScreen> {
             // Guard against a stale/deleted list id (e.g. the list was removed, or
             // `lists` hasn't loaded yet): DropdownButton asserts the value matches
             // exactly one item, so fall back to Inbox (null) when it's absent.
-            value: lists.any((l) => l.id == _listId) ? _listId : null,
+            initialValue: lists.any((l) => l.id == _listId) ? _listId : null,
             decoration: const InputDecoration(),
             items: [
               const DropdownMenuItem(value: null, child: Text('Inbox')),
@@ -263,7 +263,7 @@ class _TaskEditorScreenState extends ConsumerState<TaskEditorScreen> {
             // Guard against a goal id that's absent from the active-goals list
             // (e.g. the linked goal was archived), which would trip the dropdown's
             // single-matching-item assertion. Fall back to "None".
-            value: goals.any((g) => g.id == _goalId) ? _goalId : null,
+            initialValue: goals.any((g) => g.id == _goalId) ? _goalId : null,
             decoration: const InputDecoration(),
             items: [
               const DropdownMenuItem(value: null, child: Text('None')),

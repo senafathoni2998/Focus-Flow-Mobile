@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 8+ adaptive icon: the launcher masks this into its own shape (circle,
+     squircle, teardrop). The foreground PNGs keep the mark inside the 66dp safe
+     zone so no mask clips it; the background is a flat colour so any mask edge
+     is clean. Pre-26 launchers fall back to the ic_launcher.png in mipmap-*. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

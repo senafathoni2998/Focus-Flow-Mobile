@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tailwind sky-600, the web app's primary. Flat on purpose: a gradient here
+         would show a seam wherever a launcher's mask edge lands. -->
+    <color name="ic_launcher_background">#0284C7</color>
+</resources>

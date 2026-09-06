@@ -57,13 +57,17 @@ This app is a client. You need a running FocusFlow web instance (self-hosted; se
 Open source: github.com/senafathoni2998/Focus-Flow-Mobile
 ```
 
-## What Play asks for alongside the text — your assets
+## The graphics — two are in the repo, one is yours
 
-| Asset | Size | Notes |
+| Asset | Size | Where |
 |---|---|---|
-| App icon | 512 × 512 PNG, no alpha | The launcher icon in `res/mipmap-*` is the in-app one; the listing wants a separate hi-res file |
-| Feature graphic | 1024 × 500 PNG/JPG | Shown at the top of the listing; app name + one line is plenty |
-| Phone screenshots | at least 2, 16:9 or 9:16, ≥ 320 px | Tasks board, Habits, Focus timer, Goals — real data, not lorem ipsum |
+| App icon | 512 × 512 PNG | `docs/store-assets/playstore-icon-512.png` — the same mark the app's launcher icon now uses |
+| Feature graphic | 1024 × 500 PNG | `docs/store-assets/feature-graphic-1024x500.png` |
+| Phone screenshots | at least 2, 16:9 or 9:16, ≥ 320 px | **Yours to take** on a phone signed in to the reviewer instance — Tasks board, Habits, Focus timer, Goals, with real-looking data |
+
+Both images come from `tools/gen_icons.py`, which also writes the launcher and
+adaptive-icon layers under `android/app/src/main/res/`. Change the mark or the
+colours there and rerun it; nothing is hand-edited.
 
 ## Categorisation
 

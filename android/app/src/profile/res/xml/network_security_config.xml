@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PROFILE BUILDS ONLY. Same permissive policy as debug, and for the same reason:
+  a profile build is a DEVELOPER build. It exists to measure frame times against
+  the backend on your desk, not to be handed to anyone.
+
+  Left out of the hardening deliberately. Applying the release policy here would
+  mean a profile run against a LAN http backend fails every request, and the
+  failure would look like a performance problem rather than a policy one, which
+  is the worst possible place to hide a connection error.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  THE RELEASE POLICY. Debug and profile builds override this file with a
+  permissive one (see src/debug and src/profile), so `flutter run` is unaffected
+  by anything here.
+
+  This replaces `android:usesCleartextTraffic="true"` on <application>, which
+  permitted plain http to EVERY host on the internet for the sake of one LAN
+  backend. Narrowing it does not make cleartext safe — a bearer token on plain
+  http is readable by anyone on the same network, and only TLS fixes that — but
+  it does mean a shipped build cannot be talked into sending one anywhere
+  except the addresses named below.
+
+  WHY THESE THREE. 127.0.0.1 and localhost are the device itself, unreachable
+  from any other machine. 10.0.2.2 is the Android emulator's alias for the host
+  it runs on, and it is the app's built-in default base URL — without it a
+  release build on an emulator fails every request out of the box, with a
+  connection error that says nothing about why.
+
+  Note the one imperfection, stated rather than hidden: on a PHYSICAL device
+  10.0.2.2 is an ordinary private address rather than an emulator alias, so this
+  entry is slightly wider there than it reads. It is kept because the emulator
+  case is common and the alternative is a build that silently cannot talk to
+  anything.
+
+  RUNNING A RELEASE BUILD AGAINST YOUR OWN http:// BACKEND: add its host below.
+  It has to be a literal host — Android's network security config matches
+  hostnames and IP literals, never CIDR ranges, so "my LAN" cannot be expressed.
+  That limitation is the reason this is a build-time decision and not a Settings
+  toggle: the app lets you change the server URL at runtime, but the platform
+  decides what cleartext is allowed before the app starts.
+
+      <domain includeSubdomains="false">192.0.2.20</domain>
+
+  (192.0.2.x is the RFC 5737 documentation range, chosen so that grepping this
+  file for "domain" cannot make the example look like a live entry. Replace it
+  with your actual address.)
+
+  The real fix is to put TLS in front of the backend and use https://, after
+  which nothing needs listing here at all.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

@@ -46,7 +46,7 @@ manifest changes that `flutter create` does not produce and would silently disca
 | --- | --- |
 | `INTERNET` | Every screen calls your backend. Without it the app builds and then fails every request with a connection error. |
 | `POST_NOTIFICATIONS` | Android 13+ needs this declared before the runtime prompt can appear. Without it due reminders stay silent with no visible cause. |
-| `usesCleartextTraffic="true"` | The dev backend is plain `http://` on a LAN address. **Remove it once you terminate TLS** — as written it permits cleartext to any host, so on a shared network bearer tokens travel in the clear. |
+| `networkSecurityConfig` | Replaces `usesCleartextTraffic="true"`, which permitted plain `http` to **every host on the internet** for the sake of one LAN backend. Now split by build type — see [Cleartext and TLS](#cleartext-and-tls). |
 | `allowBackup="false"` | Tokens live in `flutter_secure_storage`, which is Keystore-backed and therefore device-bound. Android auto-backup would copy the encrypted blobs to a new device where the key does not exist, and that decryption failure is what used to pin the app on its splash screen forever. |
 
 If you ever do re-run `flutter create .`, restore the tracked files afterwards with
@@ -78,6 +78,44 @@ You can also bake in a default at build time:
 ```bash
 flutter run --dart-define=FOCUSFLOW_BASE_URL=http://192.168.1.20:3000
 ```
+
+### Cleartext and TLS
+
+The honest summary: **a bearer token sent over plain `http` is readable by anyone
+on the same network.** No setting in this app changes that. Only putting TLS in
+front of the backend and using `https://` does.
+
+What the app does do is refuse to make the exposure wider than it has to be.
+`android:usesCleartextTraffic="true"` used to allow plain http to *any* host;
+it is now a per-build-type network security config:
+
+| Build | Cleartext policy | File |
+| --- | --- | --- |
+| debug, profile | Allowed anywhere — a dev build follows you between networks | `android/app/src/{debug,profile}/res/xml/network_security_config.xml` |
+| **release** | **Denied**, except loopback and `10.0.2.2` (the emulator's alias for its host) | `android/app/src/main/res/xml/network_security_config.xml` |
+
+**Running a release build against your own `http://` backend** — which is the
+normal self-hosted case — needs its host added to the release file:
+
+```xml
+<domain includeSubdomains="false">192.168.1.20</domain>
+```
+
+It has to be a literal host. Android's network security config matches hostnames
+and IP literals, never CIDR ranges, so "my LAN" cannot be expressed. That is why
+this is a build-time decision even though the server URL itself is a runtime
+setting: the platform decides what cleartext is allowed before the app starts.
+
+Settings → Server URL shows a warning whenever the configured origin is `http`.
+
+Related, and independent of the manifest: the API client does **not** follow
+redirects. `/api/v1/*` never legitimately redirects, and following one meant the
+app would fetch whatever host the `Location` named and hand its body back as the
+backend's answer. (The bearer token does not travel across that hop — dart:io
+strips `Authorization` on a cross-host redirect, which `test/api_redirect_test.dart`
+measures rather than assumes — so this was response spoofing, not credential
+theft.) A proxy that upgrades http to https now surfaces as an error naming the
+target, instead of silently working.
 
 ## Run
 

@@ -32,6 +32,26 @@ class ApiClient {
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(seconds: 20),
       headers: {'Content-Type': 'application/json'},
+      // NOT FOLLOWED, and this is a real behaviour change rather than tidiness.
+      //
+      // `/api/v1/*` is a JSON API that never legitimately redirects. With the
+      // default (follow up to five), anything that can answer for the backend —
+      // a captive portal, a misconfigured proxy, anyone on the same network
+      // while the origin is plain http — could reply `302 Location: http://…`
+      // and the app would fetch that other host and hand its body back as the
+      // backend's answer. Measured, not assumed: the hop IS taken and the
+      // response is accepted with no error whatsoever.
+      //
+      // The bearer token does NOT travel with it — dart:io strips Authorization
+      // across a cross-host redirect, also measured — so this is response
+      // spoofing rather than credential theft. Still worth refusing: an empty
+      // task list presented as authoritative is its own kind of harm.
+      //
+      // The cost is one real case: a proxy upgrading http to https now fails
+      // instead of working silently. That failure names the target and says to
+      // change the URL in Settings, which is the right outcome — the app should
+      // be talking to https directly, not being redirected there.
+      followRedirects: false,
       // We interpret non-2xx ourselves via DioException.
     );
     _dio = Dio(options);

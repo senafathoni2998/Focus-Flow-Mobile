@@ -61,13 +61,31 @@ class SettingsScreen extends ConsumerWidget {
               ),
             );
           }),
-          ListTile(
-            leading: const Icon(Icons.dns_outlined),
-            title: const Text('Server URL'),
-            subtitle: Text(baseUrl),
-            trailing: const Icon(Icons.edit_outlined),
-            onTap: () => showServerUrlDialog(context, ref),
-          ),
+          Builder(builder: (context) {
+            // Stated on the row rather than only in a README nobody re-reads.
+            // Over plain http the bearer token is readable by anyone on the same
+            // network, and no amount of client-side care changes that — the
+            // manifest's host allowlist narrows WHERE it can be sent, not who
+            // can read it on the way. The app still works; the user is told.
+            final bool cleartext = Uri.tryParse(baseUrl)?.scheme == 'http';
+            final scheme = Theme.of(context).colorScheme;
+            return ListTile(
+              leading: Icon(cleartext ? Icons.lock_open : Icons.dns_outlined,
+                  color: cleartext ? scheme.error : null),
+              title: const Text('Server URL'),
+              subtitle: Text(
+                cleartext
+                    ? '$baseUrl\nNot encrypted — anyone on this network can read '
+                        'your sign-in token. Put TLS in front of the backend and '
+                        'use https.'
+                    : baseUrl,
+                style: cleartext ? TextStyle(color: scheme.error) : null,
+              ),
+              isThreeLine: cleartext,
+              trailing: const Icon(Icons.edit_outlined),
+              onTap: () => showServerUrlDialog(context, ref),
+            );
+          }),
           const Divider(),
           _SectionHeader('About'),
           const ListTile(

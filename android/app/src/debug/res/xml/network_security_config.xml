@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG BUILDS ONLY. Build-type resources override src/main, so this file, not
+  the strict one next door, is what a debug build ships.
+
+  Permissive on purpose: a debug build exists to be pointed at whatever machine
+  is running the backend today, and that address changes with the wifi you are
+  on. Requiring it to be listed somewhere would mean editing a committed file
+  every time you moved desks.
+
+  A debug APK is not something to install on a phone you care about. It is
+  unminified, debuggable, and signed with the shared debug key. The release
+  policy in src/main is the one that matters.
+
+  (No double hyphens anywhere in this comment on purpose: XML forbids them, and
+  writing the Flutter build flags out longhand once cost a red build.)
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

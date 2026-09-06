@@ -13,13 +13,21 @@
         android:label="FocusFlow"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:allowBackup="false"
         android:fullBackupContent="false">
-        <!-- usesCleartextTraffic: the dev backend is plain http:// on a LAN
-             address. REMOVE THIS once you terminate TLS in front of the backend
-             — as written it permits cleartext to ANY host, which on a shared
-             network means bearer tokens travel in the clear.
+        <!-- networkSecurityConfig replaces usesCleartextTraffic="true", which
+             permitted plain http to EVERY host on the internet for the sake of
+             one LAN backend. The policy now differs by build type: debug and
+             profile stay permissive (a dev build follows you between networks),
+             release allows cleartext only to loopback and the emulator's host
+             alias. See res/xml/network_security_config.xml — including how to
+             add your own host if you run a release build against http://.
+
+             This is a NARROWING, not a fix. A bearer token on plain http is
+             readable by anyone on the same network no matter which hosts are
+             allowed; only terminating TLS in front of the backend closes that,
+             and until it does the Settings screen says so on the server row.
 
              allowBackup=false: tokens live in flutter_secure_storage, which is
              Keystore-backed and therefore DEVICE-BOUND. Android auto-backup

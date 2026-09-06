@@ -45,6 +45,23 @@ class ApiException implements Exception {
     if (data is Map && data['error'] is String) {
       serverMsg = data['error'] as String;
     }
+    // A redirect is never a legitimate answer from `/api/v1/*`, and the client
+    // no longer follows one (see ApiClient's followRedirects). Handled BEFORE
+    // the server's own message, because a generic "Request failed (308)" gives
+    // no clue what to change — the one realistic cause is a proxy upgrading
+    // http to https, and the fix is to use https in Settings.
+    if (status != null && status >= 300 && status < 400) {
+      final String? location = response?.headers.value('location');
+      return ApiException(
+        location == null
+            ? 'The server redirected the request ($status). Check the server URL in Settings.'
+            : 'The server redirected to $location — use that address in Settings instead.',
+        statusCode: status,
+        hadResponse: hadResponse,
+        retryAfterSeconds: retryAfter,
+      );
+    }
+
     if (serverMsg != null) {
       return ApiException(
         serverMsg,

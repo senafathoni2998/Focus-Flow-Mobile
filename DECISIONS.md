@@ -152,6 +152,17 @@ working, with an error naming the target and pointing at Settings.
 
 ---
 
+**F8. Releases go tag → CI → Play *internal* track; production stays a human click.** ✅
+`.github/workflows/android-release.yml` runs on a `v*` tag: analyze, test, build a signed bundle,
+**refuse it if it is debug-signed** (checked on the artifact with `jarsigner`, never inferred from
+`key.properties`), keep the `.aab` as an artifact, upload to *internal*. *Why not production from
+CI:* a tag must never be able to reach every user's phone by itself; Play Console's Promote button
+gives staged rollout for free. *Why `versionCode = 100 + run number`:* monotonic without a file to
+bump, and a re-run of a run that already uploaded is rejected by Play as a duplicate — a safe failure.
+The hand-built first upload (the one thing Play's API cannot do for a new app) uses versionCode 1,
+below the offset. *Why `r0adkll/upload-google-play` and not fastlane:* one action, no Ruby toolchain
+to pin. The service account gets testing-track permissions only. Runbook: `docs/RELEASE.md`.
+
 **F7. The offline write queue covers tasks, lists, focus sessions, goals and habits — and
 nothing else, on purpose.** ✅
 This list is a set of decisions, not a to-do list. Read the reason before "finishing" it:

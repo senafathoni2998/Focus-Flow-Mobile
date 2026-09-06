@@ -1,0 +1,123 @@
+name: Android release to Google Play
+
+# Tag `vX.Y.Z` → analyze, test, build a signed bundle, upload it to the INTERNAL
+# testing track. Promotion to production is a click in Play Console, on purpose:
+# a tag should never be able to reach every user's phone by itself.
+#
+# Everything this needs, in order, is in docs/RELEASE.md — including the ONE step
+# CI cannot do, which is the very first upload.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Play track to upload to"
+        type: choice
+        default: internal
+        options: [internal, alpha, beta]
+
+env:
+  FLUTTER_VERSION: "3.44.8"
+  JAVA_VERSION: "17"
+  PACKAGE_NAME: com.focusflow.mobile
+  # versionCode = OFFSET + run number. Play rejects a versionCode it has already
+  # seen, and the hand-built first upload is versionCode 1 — the offset keeps CI
+  # permanently above it. Re-running a failed run keeps its run number, so a
+  # re-run after a successful upload is rejected rather than duplicated. Safe.
+  VERSION_CODE_OFFSET: 100
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      # Before signing is even reachable. Infos are fatal to `flutter analyze`,
+      # so a stray deprecation would otherwise surface here as a build failure.
+      - run: flutter analyze
+      - run: flutter test
+
+      - name: Write the upload key from secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/upload-keystore.jks
+          # Relative storeFile resolves beside key.properties (rootProject.file in
+          # build.gradle.kts). An unset secret expands to EMPTY, not to a missing
+          # line — the Gradle helper fails fast naming the field in that case.
+          cat > android/key.properties <<EOF
+          storeFile=upload-keystore.jks
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+
+      - name: Resolve version name and code
+        id: v
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            name="${GITHUB_REF#refs/tags/v}"
+          else
+            name="$(sed -n 's/^version: *\([0-9][0-9.]*\).*/\1/p' pubspec.yaml)"
+          fi
+          code=$(( VERSION_CODE_OFFSET + GITHUB_RUN_NUMBER ))
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "versionName=$name versionCode=$code"
+
+      - name: Build the release bundle
+        run: >
+          flutter build appbundle --release
+          --build-name="${{ steps.v.outputs.name }}"
+          --build-number="${{ steps.v.outputs.code }}"
+
+      # The gradle fallback signs with the debug key when key.properties is
+      # absent, so a bundle that "built fine" can still be one Play refuses.
+      # Checked on the artifact, never inferred from the config. Bundles carry a
+      # JAR signature, which is what jarsigner reads.
+      - name: Refuse a debug-signed bundle
+        run: |
+          set -euo pipefail
+          out="$(jarsigner -verify -verbose -certs build/app/outputs/bundle/release/app-release.aab)"
+          echo "$out" | grep -q "jar verified" || { echo "::error::bundle is not signed at all"; exit 1; }
+          if echo "$out" | grep -q "CN=Android Debug"; then
+            echo "::error::bundle is DEBUG-signed — the upload key was not applied"; exit 1
+          fi
+          echo "$out" | grep -m1 -E "CN=" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ steps.v.outputs.code }}
+          path: build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+      - name: Upload to Google Play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.PACKAGE_NAME }}
+          releaseFiles: build/app/outputs/bundle/release/app-release.aab
+          track: ${{ inputs.track || 'internal' }}
+          status: completed

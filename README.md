@@ -79,6 +79,13 @@ You can also bake in a default at build time:
 flutter run --dart-define=FOCUSFLOW_BASE_URL=http://192.168.1.20:3000
 ```
 
+### Releasing to Google Play
+
+Signed release builds, the first (hand) upload, the service account, the GitHub
+secrets, and the tag-driven workflow that uploads to the internal track are all
+in [`docs/RELEASE.md`](docs/RELEASE.md), in the order they have to happen. The
+privacy policy Play requires is [`docs/PRIVACY.md`](docs/PRIVACY.md).
+
 ### Cleartext and TLS
 
 The honest summary: **a bearer token sent over plain `http` is readable by anyone

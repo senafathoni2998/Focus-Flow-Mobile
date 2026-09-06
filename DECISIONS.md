@@ -109,7 +109,7 @@ Fine for sideloading. **❓ Change the package id before any Play Store upload.*
 
 ---
 
-**F7. The offline write queue covers four TASK operations and two LIST operations — and
+**F7. The offline write queue covers tasks, lists, focus sessions, goals and habits — and
 nothing else, on purpose.** ✅
 This list is a set of decisions, not a to-do list. Read the reason before "finishing" it:
 
@@ -120,11 +120,13 @@ This list is a set of decisions, not a to-do list. Read the reason before "finis
 | `POST /tasks/:id/complete` | **queued** | Key MANDATORY. For a recurring task the server rolls the row forward and increments `completedCount`, so a bare retry skips an occurrence the user never did. |
 | `DELETE /tasks/:id` | **queued** | No key needed: the queue treats 404 as success. Ids are server cuids and never reused, so a 404 can only mean "already deleted". |
 | `POST /tasks/reorder` | online-only | `newOrder` is an absolute position computed against a list the queue is about to change (`createTask` assigns `max(order)+10` server-side, invisible offline). It also has no caller anywhere in `lib/`, so refusing costs zero UX. |
-| `POST /habits/:id/checkin`, `POST /goals/:id/progress` | online-only | The WIRE is safe — both are key-wrapped. The **UI** is not: neither has a local projection, so offline the tile does not move, the user taps again, and that is two ops with two DIFFERENT keys. An idempotency key defends against retry duplication, never against duplicate intent our own UI manufactured. Queue these only once habits and goals render a pending delta. |
+| `POST /habits/:id/checkin`, `POST /goals/:id/progress` | **queued** | The last two, and the only DELTAS in the queue. The refusal was never about the wire — both are key-wrapped — it was that offline the tile did not move, so the user tapped again and produced two ops with two DIFFERENT keys. An idempotency key defends against retry duplication, never against duplicate intent our own UI manufactured. Three things had to be true first. **The overlay projects the arithmetic**, so the number moves on the first tap: a check-in recomputes `todayAmount` and `todayDone` exactly (`max(0, n + delta)` and `isSatisfied`) and nothing else — a streak walks a history this device is never sent. **Consecutive taps merge into one op** (see below), so five taps are one request that says `+5` rather than five queued behind each other. **A check-in freezes its DAY at enqueue**: the server defaults an absent `date` to its own today, so a tap at 23:50 that sends at 00:05 would credit tomorrow, leaving yesterday unchecked and breaking a streak the user did earn — the same defect the focus timer's frozen `startTime` exists to prevent. Both ops now DEPEND on a pending create rather than refusing one, so a habit made offline can be checked in immediately. |
 | `POST /lists` | **queued** | Key mandatory, same argument as `POST /tasks`. This is the entity that opens the SECOND local-id namespace: a task filed into it carries `listId: 'local_…'`, which is why `listId` is in `kIdBearingBodyKeys` (substitution) AND in `_depsFor` (blocking). Substitution alone is not enough — without the dep edge the task could be dispatched before its list existed, and FIFO only happens to save that case. |
 | `DELETE /lists/:id` | **queued** | No key needed; 404 counts as success for any delete. Note the blast radius: `onDelete: SetNull` at the DATABASE level re-parents every task in that list to the Inbox. That cascade appears nowhere in `listService.ts`, so anyone reading the service alone will miss it — which is why draining a list op refreshes tasks too. |
 | `PATCH /lists/:id` | online-only | Not a contract objection: the wire is the safest of the lot, two absolute scalar assignments. `ListsController.update` simply has **no caller anywhere in the app**. Queueing it would build an offline path for something the UI cannot do online either. |
-| Create/edit/delete goal, habit, tag, saved filter | online-only (later) | Each needs its own overlay, seam and `toJson` before it is safe, and each has a specific trap: goal create/PATCH return raw rows with no `progress` (folding one in shows 0%), habit ones return no `stats` (folding one blanks the streak), and tags have no POST at all — a tag is created as a side effect of writing a task's `tags` list, so tag creation is ALREADY covered and needs no op kind. A queued tag delete additionally fights any queued task write naming that tag, and the tag always wins. |
+| `POST /goals`, `PATCH /goals/:id`, `DELETE /goals/:id`, `POST /goals/:id/status` | **queued** | Create carries a key (the route is wrapped); the rest need none — `goalService` writes `patch[k] = v[k]` over a fixed allowlist, so every field is an absolute assignment with no delta anywhere, and status is a validated SET. The overlay carries `progress`/`taskTotal`/`taskCompleted` through UNCHANGED rather than recomputing them: that would mean reimplementing goalStats.ts, and a tasks-derived percent depends on tasks the goal overlay cannot see. A goal's ACK is deliberately not folded into server truth — `createGoal`/`updateGoal` return the RAW row, so upserting one would blank the goal to 0%; the post-drain delta carries the properly serialised row instead. |
+| `POST /habits`, `PATCH /habits/:id`, `DELETE /habits/:id`, `POST /habits/:id/archive` | **queued** | Create carries a key (the route is wrapped); the rest need none — `habitSchema.partial()` writes exactly the keys present, every one an absolute assignment, and archive is a bare boolean SET. Archive and unarchive are ONE op kind for that reason, and the overlay SETS the flag rather than removing the row: remove it and a queued archive undone by a queued restore would leave nothing to flip back, so the habit would stay hidden until the queue drained. The overlay carries `stats` through UNCHANGED — recomputing a streak means reimplementing habitStats.ts against up to 1200 check-in rows this device is never sent. A habit's ACK is deliberately not folded into server truth: `createHabit`/`updateHabit` return the RAW row and `Habit.fromJson` substitutes `HabitStats.empty()`, so upserting one would blank the streak to zero; the post-drain delta carries the properly serialised row instead. |
+| Create/edit/delete tag, saved filter | online-only (later) | Tags have no POST at all — a tag is created as a side effect of writing a task's `tags` list, so tag creation is ALREADY covered and needs no op kind. A queued tag delete additionally fights any queued task write naming that tag, and the tag always wins. |
 | `POST /sessions`, `/sessions/:id/complete`, `/sessions/:id/cancel` | **queued** | Unblocked: the server now accepts an optional client `startTime`, clamped forward to `now` and backward to 30 days. The instant is FROZEN at enqueue — without it a flight's pomodoros all landed when the wifi reconnected, putting hours of focus time on the wrong DAY in every chart. The create carries a key (the route is wrapped); complete and cancel do not, and their replay hits a bare 409 "Session is not running" which has no `Retry-After` and is therefore terminal rather than six wasted attempts. **The timer starts before anything touches the network** — it is local and deadline-anchored, so making it wait on a round trip only meant a user with no signal could not focus at all. |
 | `POST /chat` | online-only | The response IS the request's purpose. |
 | `POST /reminders/dispatch` | online-only | A server-side "I showed this" marker whose read half needs the network anyway. |
@@ -161,6 +163,45 @@ Supporting rules, each preventing something specific:
   and it is advanced only AFTER the delta has been applied, because storing it first
   and then failing would skip those changes permanently. A failed delta falls back to
   the old per-entity refreshes.
+- **`goalId` joined the allowlist WITH the goal queue, not before it.** Until a goal could be
+  created offline nothing could produce a local goal id, and an entry for it would have been
+  protection that looked real and covered nothing.
+- **Only a DELTA may be merged, and only into an op that has never been on the wire.**
+  Everything else in the queue is an absolute assignment, where merging would gain nothing.
+  For the two that are not, five taps on a `+1` button should be one request. The guards are
+  each preventing something specific: `attempts == 0` (after even an unanswered send the
+  server may already hold that check-in), NOT the op in flight (`attempts` is incremented
+  when a send FAILS, so an op awaiting its answer still reads 0), a FRESH idempotency key
+  (reusing one under a changed body is the 422 that wedges a write permanently — both merged
+  keys were minted and never used, so abandoning them is free), and the same frozen `date`
+  (two taps either side of midnight are two different days on the server). A sum of zero
+  annihilates the pair, the same way a create-then-delete never reaches the network.
+- **A CHECK-IN's ack is folded into server truth; every other habit ack is not.** The
+  difference is what the response contains. `POST /habits` and `PATCH /habits/:id` return the
+  raw row and folding one blanks the streak. `POST /habits/:id/checkin` returns the habit
+  fully scored — and here folding is not merely safe but REQUIRED: a check-in writes
+  `HabitCheckIn`, never `Habit`, so the habit's own `updatedAt` does not move and the
+  post-drain delta will not carry it back. Skip the fold and the tick the user just watched
+  go on comes straight off again the moment the op leaves the queue.
+- **`goalPercent` is duplicated in Dart, deliberately, and pinned by a test.** The goal
+  overlay used to carry `progress` through untouched on the grounds that recomputing meant
+  reimplementing goalStats.ts. That was too broad: `goalPercent` is a pure function of fields
+  the client already holds, and carrying it meant a goal edited from 40% to 80% offline still
+  showed 40%, and one created at 60% showed 0%. It is recomputed for rows a pending op
+  TOUCHED — an untouched goal keeps the server's own figure, so a future divergence in the
+  server's scoring is not silently overwritten by ours. `daysRemaining` is still carried:
+  recomputing it means comparing a deadline to the phone's clock, which near midnight
+  disagrees with the server by a whole day for no benefit.
+- **`habitId` did NOT join `kIdBearingBodyKeys`, and that is the same rule as `goalId`.**
+  Nothing in this API puts a habit id in a request BODY — every habit route names it in the
+  path, which `resolve` substitutes through `op.target`. An entry would be protection that
+  looks real and covers nothing.
+- **A delta merge treats "archived" as a REMOVAL, not an update.** An archived habit (and an
+  archived goal) is still a live row, so it gets no tombstone and arrives in `changed.*` like
+  any edit — upserting it put a ghost on a board whose list endpoint filters it out, and a
+  `full` sync replaced the whole list with one that included every archived row. Both
+  controllers now filter on merge. This was a real defect shipped with the goal queue and
+  found while building the habit one.
 - **`taskId` joins `parentTaskId` and `listId` in `kIdBearingBodyKeys`.** A pomodoro can be
   attributed to a task created in the same offline stretch, so its body can carry a local task
   id — the third cross-entity reference, and the same rule applies: substitute at dispatch AND

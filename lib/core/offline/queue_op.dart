@@ -18,7 +18,7 @@ import 'dart:math';
 
 /// Which entity an op acts on. Derived from [OpKind] rather than stored, so the
 /// two can never disagree on disk.
-enum OpEntity { task, list, session }
+enum OpEntity { task, list, session, goal, habit }
 
 /// Every queued write. Everything NOT here is online-only on purpose; see
 /// DECISIONS.md F7 for the per-operation refusals and the reason for each.
@@ -37,6 +37,35 @@ enum OpKind {
   createSession,
   completeSession,
   cancelSession,
+  createGoal,
+  updateGoal,
+  deleteGoal,
+  setGoalStatus,
+  createHabit,
+  updateHabit,
+  deleteHabit,
+  setHabitArchived,
+  // The two DELTAS. Every other queued write is an absolute assignment, which is
+  // why only these two carry a mandatory key and are the only ones that can be
+  // coalesced — see [isDeltaKind] and [coalesceDelta].
+  adjustGoalProgress,
+  checkInHabit,
+}
+
+/// True for the two ops that ADD to a value rather than setting it.
+///
+/// The distinction is load-bearing three times over: a delta must carry an
+/// idempotency key (a replayed "+20 pages" is progress the user never made), a
+/// delta may be merged with the one before it, and a delta must be projected
+/// arithmetically by its overlay rather than copied.
+bool isDeltaKind(OpKind kind) =>
+    kind == OpKind.adjustGoalProgress || kind == OpKind.checkInHabit;
+
+/// The signed amount a delta op carries, or null if it is not one / is malformed.
+num? deltaOf(QueuedOp op) {
+  if (!isDeltaKind(op.kind)) return null;
+  final Object? v = op.body?['delta'];
+  return v is num ? v : null;
 }
 
 /// What the flusher decided about one send.
@@ -226,6 +255,18 @@ class QueuedOp {
         OpKind.completeSession ||
         OpKind.cancelSession =>
           OpEntity.session,
+        OpKind.createGoal ||
+        OpKind.updateGoal ||
+        OpKind.deleteGoal ||
+        OpKind.setGoalStatus ||
+        OpKind.adjustGoalProgress =>
+          OpEntity.goal,
+        OpKind.createHabit ||
+        OpKind.updateHabit ||
+        OpKind.deleteHabit ||
+        OpKind.setHabitArchived ||
+        OpKind.checkInHabit =>
+          OpEntity.habit,
       };
 
   /// True for any delete, whatever the entity.
@@ -234,7 +275,7 @@ class QueuedOp {
   /// `kind == OpKind.deleteTask` — as it did while tasks were the only entity —
   /// would dead-letter a re-sent list delete with "List not found", for a list
   /// that IS gone, behind a Retry button that could never succeed.
-  bool get isDelete => kind == OpKind.deleteTask || kind == OpKind.deleteList;
+  bool get isDelete => isDeleteKind(kind);
 
   String get method => switch (kind) {
         OpKind.createTask ||
@@ -242,10 +283,20 @@ class QueuedOp {
         OpKind.createList ||
         OpKind.createSession ||
         OpKind.completeSession ||
-        OpKind.cancelSession =>
+        OpKind.cancelSession ||
+        OpKind.createGoal ||
+        OpKind.setGoalStatus ||
+        OpKind.createHabit ||
+        OpKind.setHabitArchived ||
+        OpKind.adjustGoalProgress ||
+        OpKind.checkInHabit =>
           'POST',
-        OpKind.updateTask => 'PATCH',
-        OpKind.deleteTask || OpKind.deleteList => 'DELETE',
+        OpKind.updateTask || OpKind.updateGoal || OpKind.updateHabit => 'PATCH',
+        OpKind.deleteTask ||
+        OpKind.deleteList ||
+        OpKind.deleteGoal ||
+        OpKind.deleteHabit =>
+          'DELETE',
       };
 
   bool get carriesKey => key != null;
@@ -421,6 +472,15 @@ const List<String> kIdBearingBodyKeys = <String>[
   'parentTaskId',
   'listId',
   'taskId',
+  // Added with the goal queue, not before it: until a goal could be created
+  // offline nothing could produce a local goal id, and an entry for it would
+  // have been protection that looked real and covered nothing.
+  'goalId',
+  // NO `habitId`, and that is the same rule applied a fourth time rather than an
+  // oversight. Nothing in this API puts a habit id in a request BODY — every
+  // habit route names it in the path, which `resolve` substitutes through
+  // `op.target`. An entry here would be protection that looks real and covers
+  // nothing. It goes in if and when a body is ever built that references one.
 ];
 
 /// Substitute local ids into a throwaway request. Returns [Resolution.blocked]
@@ -473,12 +533,22 @@ Resolution resolve(QueuedOp op, Map<String, String> idMap) {
     OpKind.createSession => '/sessions',
     OpKind.completeSession => '/sessions/$target/complete',
     OpKind.cancelSession => '/sessions/$target/cancel',
+    OpKind.createGoal => '/goals',
+    OpKind.updateGoal || OpKind.deleteGoal => '/goals/$target',
+    OpKind.setGoalStatus => '/goals/$target/status',
+    OpKind.adjustGoalProgress => '/goals/$target/progress',
+    OpKind.createHabit => '/habits',
+    OpKind.updateHabit || OpKind.deleteHabit => '/habits/$target',
+    OpKind.setHabitArchived => '/habits/$target/archive',
+    OpKind.checkInHabit => '/habits/$target/checkin',
   };
 
   final String? idPath = switch (op.kind) {
     OpKind.createTask => 'task.id',
     OpKind.createList => 'list.id',
     OpKind.createSession => 'session.id',
+    OpKind.createGoal => 'goal.id',
+    OpKind.createHabit => 'habit.id',
     _ => null,
   };
 
@@ -513,7 +583,7 @@ OpOutcome classify({
   // This is SUCCESS FOR DELETES ONLY. A 404 on a complete means the completion
   // was never recorded; calling that success would drop the op, drop its
   // optimistic row, and un-tick the checkbox on the next refresh with no trace.
-  if (status == 404 && _isDeleteKind(kind)) return OpOutcome.succeeded;
+  if (status == 404 && isDeleteKind(kind)) return OpOutcome.succeeded;
 
   if (status == 401) return OpOutcome.authPaused;
 
@@ -553,8 +623,38 @@ bool isDue(QueuedOp op, int nowMs) {
   return op.nextAtMs - nowMs > kMaxBackoff.inMilliseconds;
 }
 
-bool _isDeleteKind(OpKind kind) =>
-    kind == OpKind.deleteTask || kind == OpKind.deleteList;
+/// Whether a 404 means "already done" for this kind.
+///
+/// A SWITCH, not a chain of ==, and that is the whole point. This lived as
+/// `kind == deleteTask || kind == deleteList` alongside a separate `isDelete`
+/// getter that said the same thing — so adding `deleteGoal` updated one and not
+/// the other, and a re-sent goal delete dead-lettered with "Goal not found" for
+/// a goal that WAS gone, behind a Retry that could never work. Nothing warned:
+/// neither form is exhaustive-checked. Now there is one definition and the
+/// compiler asks about every new kind.
+bool isDeleteKind(OpKind kind) => switch (kind) {
+      OpKind.deleteTask ||
+      OpKind.deleteList ||
+      OpKind.deleteGoal ||
+      OpKind.deleteHabit =>
+        true,
+      OpKind.createTask ||
+      OpKind.updateTask ||
+      OpKind.completeTask ||
+      OpKind.createList ||
+      OpKind.createSession ||
+      OpKind.completeSession ||
+      OpKind.cancelSession ||
+      OpKind.createGoal ||
+      OpKind.updateGoal ||
+      OpKind.setGoalStatus ||
+      OpKind.createHabit ||
+      OpKind.updateHabit ||
+      OpKind.setHabitArchived ||
+      OpKind.adjustGoalProgress ||
+      OpKind.checkInHabit =>
+        false,
+    };
 
 bool isExpired(QueuedOp op, int nowMs) =>
     nowMs - op.createdAtMs > const Duration(days: kExpiryDays).inMilliseconds;
@@ -617,6 +717,80 @@ List<QueuedOp>? cancelCreateThenDelete(List<QueuedOp> ops, String localId) {
   return ops.where((QueuedOp o) => !doomed.contains(o.id)).toList();
 }
 
+/// Merge a just-staged delta into the op immediately before it.
+///
+/// [ops] must already END with [staged], the same convention
+/// [cancelCreateThenDelete] uses. Returns the ops that remain, or null to change
+/// nothing.
+///
+/// WHY MERGE AT ALL. Eight taps on a water habit while offline is eight ops,
+/// eight round trips through a single-flight FIFO queue, and eight idempotency
+/// rows — with every other write the user makes stuck behind them. Merged, it is
+/// one request that says `+8`.
+///
+/// WHY IT IS SAFE, WHICH IS THE ONLY REASON IT IS ALLOWED:
+///   * `attempts == 0` — the previous op has never been on the wire, so nothing
+///     of it can exist on the server. This is the same guard
+///     `cancelCreateThenDelete` turns on, for the same reason.
+///   * NOT the op in flight. `attempts` does not cover that: it is incremented
+///     when a send FAILS, so an op awaiting its answer still reads 0.
+///   * A FRESH idempotency key. Both merged keys were minted and never used, so
+///     abandoning them costs nothing — and reusing one under a changed body is
+///     exactly the 422 that wedges a write permanently.
+///   * The frozen `date` must match. Two taps either side of midnight are two
+///     different days on the server and must stay two requests.
+///
+/// A sum of ZERO annihilates the pair: tapping + then − while offline should
+/// never reach the network at all.
+List<QueuedOp>? coalesceDelta(
+  List<QueuedOp> ops,
+  QueuedOp staged, {
+  String? inFlightOpId,
+  Random? rng,
+}) {
+  if (!isDeltaKind(staged.kind) || ops.length < 2) return null;
+  if (ops.last.id != staged.id) return null;
+
+  final QueuedOp prev = ops[ops.length - 2];
+  if (prev.kind != staged.kind || prev.target != staged.target) return null;
+  if (prev.attempts != 0 || prev.id == inFlightOpId) return null;
+  if (prev.body?['date'] != staged.body?['date']) return null;
+
+  final num? a = deltaOf(prev);
+  final num? b = deltaOf(staged);
+  if (a == null || b == null) return null;
+
+  final List<QueuedOp> head = ops.sublist(0, ops.length - 2);
+  final num sum = a + b;
+  if (sum == 0) return head;
+
+  final Map<String, dynamic> body = <String, dynamic>{
+    ...?prev.body,
+    'delta': sum,
+  };
+  return <QueuedOp>[
+    ...head,
+    QueuedOp(
+      // The EARLIER op's id and seq are kept: it holds the FIFO position the
+      // merged intent started at, and the badge on screen is already keyed to
+      // that id. Its createdAtMs is kept too, so expiry counts from the first
+      // tap rather than being pushed back by every one after it.
+      id: prev.id,
+      seq: prev.seq,
+      kind: prev.kind,
+      target: prev.target,
+      deps: prev.deps,
+      body: body,
+      key: newIdempotencyKey(rng: rng),
+      // Rebuilt so the AMOUNT is right. One dead letter can now stand for five
+      // taps, and "Discard" on it drops all five — the row has to say so.
+      summary:
+          '${_deltaVerb(prev.kind)} ${_signed(body)}${_subjectTail(prev.summary)}',
+      createdAtMs: prev.createdAtMs,
+    ),
+  ];
+}
+
 /// The key a queued edit uses to say which version it was based on.
 const String kPreconditionKey = 'expectedUpdatedAt';
 
@@ -660,6 +834,18 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.completeSession ||
     OpKind.cancelSession =>
       'focus session',
+    OpKind.createGoal ||
+    OpKind.updateGoal ||
+    OpKind.deleteGoal ||
+    OpKind.setGoalStatus ||
+    OpKind.adjustGoalProgress =>
+      'goal',
+    OpKind.createHabit ||
+    OpKind.updateHabit ||
+    OpKind.deleteHabit ||
+    OpKind.setHabitArchived ||
+    OpKind.checkInHabit =>
+      'habit',
   };
   final String subject = label.isEmpty ? 'a $noun' : '"$label"';
   return switch (kind) {
@@ -672,5 +858,48 @@ String summaryFor(OpKind kind, Map<String, dynamic>? body, String fallbackTitle)
     OpKind.createSession => 'Focus session',
     OpKind.completeSession => 'Finished focus session',
     OpKind.cancelSession => 'Stopped focus session',
+    OpKind.createGoal => 'New goal $subject',
+    OpKind.updateGoal => 'Edit goal $subject',
+    OpKind.deleteGoal => 'Delete goal $subject',
+    OpKind.setGoalStatus => 'Change goal status $subject',
+    OpKind.createHabit => 'New habit $subject',
+    OpKind.updateHabit => 'Edit habit $subject',
+    OpKind.deleteHabit => 'Delete habit $subject',
+    // One op kind covers both directions, so the summary has to read the body to
+    // say which one. "Archive"/"Restore" of a habit that has already vanished
+    // from every list is the only description the user will ever get of it.
+    OpKind.setHabitArchived => body?['archived'] == false
+        ? 'Restore habit $subject'
+        : 'Archive habit $subject',
+    // The AMOUNT is in the text, not just the verb. These are the only two ops
+    // that can be merged, so by the time one fails it may represent five taps —
+    // "Check in" would understate what the user is being asked to retry.
+    OpKind.adjustGoalProgress => 'Progress ${_signed(body)} on goal $subject',
+    OpKind.checkInHabit => 'Check in ${_signed(body)} on habit $subject',
   };
+}
+
+String _deltaVerb(OpKind kind) =>
+    kind == OpKind.checkInHabit ? 'Check in' : 'Progress';
+
+/// The trailing `on habit "Drink water"` of a delta summary.
+///
+/// The entity's NAME is nowhere on the op — it is baked into the summary at
+/// enqueue precisely because by the time an op fails the row it names may not
+/// exist anywhere the UI can look up. A merge therefore rebuilds the text from
+/// the earlier op's own tail. Both halves are generated in this file, a few
+/// lines apart, so the coupling cannot drift unnoticed.
+///
+/// FIRST occurrence, deliberately: the separator always precedes the name, so a
+/// habit called "Read on the train" still splits in the right place.
+String _subjectTail(String summary) {
+  final int at = summary.indexOf(' on ');
+  return at >= 0 ? summary.substring(at) : '';
+}
+
+String _signed(Map<String, dynamic>? body) {
+  final Object? v = body?['delta'];
+  if (v is! num) return '';
+  final String n = v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+  return v > 0 ? '+$n' : n;
 }

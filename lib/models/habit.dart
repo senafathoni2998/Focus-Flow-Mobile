@@ -12,6 +12,14 @@ class HabitCheckIn {
         date: Dates.parse(j['date']) ?? DateTime.now(),
         amount: asDouble(j['amount'], 1),
       );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        // Local, because that is what Dates.parse hands back — the two have to
+        // agree or a round trip through the overlay would drift.
+        'date': date.toIso8601String(),
+        'amount': amount,
+      };
 }
 
 /// Server-computed habit statistics (from `habitStats.ts`).
@@ -57,6 +65,17 @@ class HabitStats {
         streakUnit: 'day',
         weeklyProgress: 0,
       );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'currentStreak': currentStreak,
+        'bestStreak': bestStreak,
+        'totalDays': totalDays,
+        'monthlyRate': monthlyRate,
+        'todayDone': todayDone,
+        'todayAmount': todayAmount,
+        'streakUnit': streakUnit,
+        'weeklyProgress': weeklyProgress,
+      };
 }
 
 class Habit {
@@ -110,4 +129,33 @@ class Habit {
         stats: j['stats'] is Map ? HabitStats.fromJson(asMap(j['stats'])) : HabitStats.empty(),
         checkIns: asMapList(j['checkIns']).map(HabitCheckIn.fromJson).toList(),
       );
+
+  /// The inverse of [Habit.fromJson], for the offline overlay — which folds
+  /// pending writes in JSON space so a PATCH body can be applied with the
+  /// server's own key-presence semantics.
+  ///
+  /// `stats` is emitted even though it is entirely server-derived, and that is
+  /// the whole reason this method needs care: [Habit.fromJson] substitutes
+  /// [HabitStats.empty] when `stats` is absent, so dropping it here would blank
+  /// every streak and month-rate to zero the moment ANY habit write was pending.
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'name': name,
+        'icon': icon,
+        'color': color,
+        'frequencyType': frequencyType,
+        'weekdays': weekdays,
+        'weeklyTarget': weeklyTarget,
+        'goalType': goalType,
+        'targetAmount': targetAmount,
+        'unit': unit,
+        'archived': archived,
+        'order': order,
+        'stats': stats.toJson(),
+        // Always empty in practice — every habit endpoint computes `stats` from
+        // the check-ins and then strips them, because the client has no reader
+        // for up to 1200 rows per habit. Emitted anyway so this stays a true
+        // inverse rather than one that happens to work.
+        'checkIns': checkIns.map((HabitCheckIn c) => c.toJson()).toList(),
+      };
 }

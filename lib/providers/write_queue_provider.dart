@@ -10,6 +10,8 @@ import '../core/offline/write_queue_store.dart';
 import '../data/sync_repository.dart';
 import 'providers.dart';
 import 'dashboard_provider.dart';
+import 'goals_provider.dart';
+import 'habits_provider.dart';
 import 'lists_provider.dart';
 import 'session_provider.dart';
 import 'tags_provider.dart';
@@ -56,7 +58,7 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
       ref.read(queueCorruptedProvider.notifier).state = recoveredFromCorruption;
       ref.read(droppedDeadProvider.notifier).state = doc.droppedDead;
     },
-    onServerRow: (OpEntity entity, Map<String, dynamic> row) {
+    onServerRow: (OpKind kind, OpEntity entity, Map<String, dynamic> row) {
       // Written into server truth in the same turn the op leaves the queue, so
       // the row never blinks out between "acked" and "authoritative".
       switch (entity) {
@@ -64,6 +66,32 @@ final queueFlusherProvider = Provider<QueueFlusher>((ref) {
           ref.read(tasksControllerProvider.notifier).upsertFromServer(row);
         case OpEntity.list:
           ref.read(listsControllerProvider.notifier).upsertFromServer(row);
+        case OpEntity.goal:
+          // Deliberately NOT folded. POST /goals and PATCH /goals/:id return the
+          // RAW row — goalService applies withProgress/withTaskCounts only in
+          // the LIST endpoints — so upserting an ack would blank the goal to 0%
+          // until the next full fetch. The post-drain delta carries the properly
+          // serialised row instead.
+          break;
+        case OpEntity.habit:
+          // A CHECK-IN's ack is folded; every other habit ack is not, and the
+          // difference is what the response actually contains.
+          //
+          // POST /habits and PATCH /habits/:id return the RAW row — withHabitStats
+          // runs only on the list and sync paths — and Habit.fromJson substitutes
+          // HabitStats.empty() when `stats` is missing, so upserting one would
+          // blank the streak to zero. checkInHabit returns the habit WITH
+          // recomputed stats, which is the whole point of that endpoint.
+          //
+          // And here folding is not merely safe, it is required: a check-in
+          // writes HabitCheckIn, never Habit, so the habit's own `updatedAt`
+          // does not move and the post-drain delta will not carry it back. Skip
+          // this and the tick the user just watched go on would come straight
+          // off again the moment the op left the queue.
+          if (kind == OpKind.checkInHabit) {
+            ref.read(habitsControllerProvider.notifier).upsertFromServer(row);
+          }
+          break;
         case OpEntity.session:
           // Nothing to fold. The focus timer runs off local state and its
           // complete/cancel ops reference the session by its LOCAL id, which the
@@ -115,6 +143,12 @@ Future<void> _reconcileAfterDrain(Ref ref, Set<OpEntity> touched) async {
     ref.read(tagsControllerProvider.notifier).applyServerDelta(
         delta.tags, deletedOf('tag'),
         full: delta.full);
+    ref.read(goalsControllerProvider.notifier).applyServerDelta(
+        delta.goals, deletedOf('goal'),
+        full: delta.full);
+    ref.read(habitsControllerProvider.notifier).applyServerDelta(
+        delta.habits, deletedOf('habit'),
+        full: delta.full);
 
     if (touched.contains(OpEntity.session)) {
       // A completed pomodoro changes a task's actualMin and the dashboard's
@@ -164,6 +198,9 @@ final taskPendingStateProvider =
 
 final listPendingStateProvider =
     Provider<Map<String, PendingState>>((ref) => _badges(ref, OpEntity.list));
+
+final habitPendingStateProvider =
+    Provider<Map<String, PendingState>>((ref) => _badges(ref, OpEntity.habit));
 
 /// Mounted once above the screen swap, beside the reminder poller.
 ///

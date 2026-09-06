@@ -24,6 +24,13 @@ class GoalProgress {
 
   static GoalProgress empty() =>
       GoalProgress(percent: 0, isAchieved: false, daysRemaining: null, isOverdue: false);
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'percent': percent,
+        'isAchieved': isAchieved,
+        'daysRemaining': daysRemaining,
+        'isOverdue': isOverdue,
+      };
 }
 
 class Goal {
@@ -87,4 +94,42 @@ class Goal {
         taskCompleted: j['taskCompleted'] == null ? null : asInt(j['taskCompleted']),
         progress: j['progress'] is Map ? GoalProgress.fromJson(asMap(j['progress'])) : GoalProgress.empty(),
       );
+
+  /// The inverse of [Goal.fromJson], for the offline overlay — which folds
+  /// pending writes in JSON space so a PATCH body can be applied with the
+  /// server's own key-presence semantics.
+  ///
+  /// `progress`, `taskTotal` and `taskCompleted` are emitted even though they
+  /// are server-derived: [Goal.fromJson] substitutes GoalProgress.empty() when
+  /// `progress` is missing, so dropping them here would show every overlaid goal
+  /// at 0% the moment any edit was pending.
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'title': title,
+        'description': description,
+        'icon': icon,
+        'color': color,
+        'progressType': progressType,
+        'targetValue': targetValue,
+        'currentValue': currentValue,
+        'unit': unit,
+        'manualProgress': manualProgress,
+        // Emitted as a UTC-MIDNIGHT INSTANT, which is what the server sends and
+        // therefore what fromJson's parseUtcDay is built to read back.
+        //
+        // NOT `Dates.ymd(...)`. parseUtcDay is not the inverse of ymd: a bare
+        // yyyy-MM-dd parses as LOCAL midnight and is then converted to UTC, so
+        // east of UTC it lands on the previous calendar day. The editor still
+        // SENDS ymd, because that is what the write path expects — the two
+        // directions genuinely use different shapes.
+        'targetDate': targetDate == null
+            ? null
+            : DateTime.utc(targetDate!.year, targetDate!.month, targetDate!.day)
+                .toIso8601String(),
+        'status': status,
+        'order': order,
+        'taskTotal': taskTotal,
+        'taskCompleted': taskCompleted,
+        'progress': progress.toJson(),
+      };
 }

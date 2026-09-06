@@ -126,7 +126,8 @@ void main() {
       transport: transport,
       currentUserId: () async => uid,
       onChanged: (QueueDoc _, String? __, FlushState ___, bool ____) {},
-      onServerRow: (OpEntity _, Map<String, dynamic> row) => serverTasks.add(row),
+      onServerRow: (OpKind _, OpEntity __, Map<String, dynamic> row) =>
+          serverTasks.add(row),
       onDrained: (Set<OpEntity> _) => drained++,
       nowMs: () => now,
     );
@@ -400,7 +401,7 @@ void main() {
         return calls <= 1 ? 'u1' : 'u2';
       },
       onChanged: (QueueDoc _, String? __, FlushState ___, bool ____) {},
-      onServerRow: (OpEntity _, Map<String, dynamic> __) {},
+      onServerRow: (OpKind _, OpEntity __, Map<String, dynamic> ___) {},
       onDrained: (Set<OpEntity> _) {},
       nowMs: () => now,
     );
@@ -637,7 +638,7 @@ void main() {
         transport: gated,
         currentUserId: () async => uid,
         onChanged: (QueueDoc _, String? __, FlushState ___, bool ____) {},
-        onServerRow: (OpEntity _, Map<String, dynamic> __) {},
+        onServerRow: (OpKind _, OpEntity __, Map<String, dynamic> ___) {},
         onDrained: (Set<OpEntity> _) {},
         nowMs: () => now,
       );
@@ -682,7 +683,7 @@ void main() {
         transport: gated,
         currentUserId: () async => uid,
         onChanged: (QueueDoc _, String? __, FlushState ___, bool ____) {},
-        onServerRow: (OpEntity _, Map<String, dynamic> __) {},
+        onServerRow: (OpKind _, OpEntity __, Map<String, dynamic> ___) {},
         onDrained: (Set<OpEntity> _) {},
         nowMs: () => now,
       );

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/offline/queue_flusher.dart';
 import '../../providers/goals_provider.dart';
 import '../../providers/habits_provider.dart';
 import '../../widgets/common.dart';
@@ -47,10 +48,17 @@ class ArchivedScreen extends ConsumerWidget {
                             leading: g.icon,
                             title: g.title,
                             onRestore: () async {
-                              await ref
+                              final outcome = await ref
                                   .read(goalsControllerProvider.notifier)
                                   .setStatus(g.id, 'active');
-                              ref.invalidate(archivedGoalsProvider);
+                              // Only refetch when it actually landed. A queued
+                              // restore leaves the goal archived on the server,
+                              // so refetching would put the row straight back
+                              // and read as "that did nothing".
+                              if (outcome == SubmitOutcome.sent) {
+                                ref.invalidate(archivedGoalsProvider);
+                              }
+                              return outcome;
                             },
                           ),
                       ],
@@ -71,10 +79,13 @@ class ArchivedScreen extends ConsumerWidget {
                             leading: h.icon,
                             title: h.name,
                             onRestore: () async {
-                              await ref
+                              final outcome = await ref
                                   .read(habitsControllerProvider.notifier)
                                   .unarchive(h.id);
-                              ref.invalidate(archivedHabitsProvider);
+                              if (outcome == SubmitOutcome.sent) {
+                                ref.invalidate(archivedHabitsProvider);
+                              }
+                              return outcome;
                             },
                           ),
                       ],
@@ -96,7 +107,7 @@ class _ArchivedTile extends StatefulWidget {
 
   final String leading;
   final String title;
-  final Future<void> Function() onRestore;
+  final Future<SubmitOutcome> Function() onRestore;
 
   @override
   State<_ArchivedTile> createState() => _ArchivedTileState();
@@ -108,8 +119,16 @@ class _ArchivedTileState extends State<_ArchivedTile> {
   Future<void> _restore() async {
     setState(() => _busy = true);
     try {
-      await widget.onRestore();
-      if (mounted) showInfo(context, 'Restored');
+      final SubmitOutcome outcome = await widget.onRestore();
+      if (mounted) {
+        // "Restored" would be a plain lie for a queued restore: the row is still
+        // archived on the server and still listed right here.
+        if (outcome == SubmitOutcome.deferred) {
+          showOfflineSaved(context);
+        } else {
+          showInfo(context, 'Restored');
+        }
+      }
     } catch (e) {
       if (mounted) showError(context, e);
     } finally {

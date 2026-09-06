@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../core/offline/queue_flusher.dart';
 import '../../core/date_format.dart';
 import '../../models/goal.dart';
+import '../../providers/filter_provider.dart';
 import '../../providers/goals_provider.dart';
 import '../../widgets/common.dart';
 
@@ -13,6 +15,9 @@ class GoalsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(goalsControllerProvider);
+    // Content comes from the overlay so a goal made offline is real immediately;
+    // the AsyncValue is still consulted for its loading and error states.
+    final overlaid = ref.watch(allGoalsProvider);
     return Scaffold(
       appBar: AppBar(title: const Text('Goals')),
       floatingActionButton: FloatingActionButton(
@@ -25,7 +30,11 @@ class GoalsScreen extends ConsumerWidget {
         loading: () => const LoadingCenter(),
         error: (e, _) =>
             ErrorRetry(message: '$e', onRetry: () => ref.read(goalsControllerProvider.notifier).load()),
-        data: (goals) {
+        data: (_) {
+          // The overlay, not the raw response: a goal created offline must be
+          // real on this screen immediately, and one whose edit is pending must
+          // show the edit.
+          final goals = overlaid;
           final active = goals.where((g) => g.status != 'achieved').toList();
           final achieved = goals.where((g) => g.status == 'achieved').toList();
           return RefreshIndicator(
@@ -76,9 +85,15 @@ class _GoalCard extends ConsumerWidget {
     final p = goal.progress;
     final ctrl = ref.read(goalsControllerProvider.notifier);
 
-    Future<void> run(Future<void> Function() f) async {
+    Future<void> run(Future<SubmitOutcome> Function() f) async {
       try {
-        await f();
+        // Silent when it lands, a word when it does not. The bar moving IS the
+        // feedback for a progress tap; the toast is only for "this has not gone
+        // anywhere yet".
+        final SubmitOutcome outcome = await f();
+        if (outcome == SubmitOutcome.deferred && context.mounted) {
+          showOfflineSaved(context);
+        }
       } catch (e) {
         if (context.mounted) showError(context, e);
       }
@@ -280,12 +295,15 @@ class _GoalEditorScreenState extends ConsumerState<GoalEditorScreen> {
     setState(() => _saving = true);
     try {
       final ctrl = ref.read(goalsControllerProvider.notifier);
-      if (_isEdit) {
-        await ctrl.update(widget.goal!.id, body);
-      } else {
-        await ctrl.create(body);
+      final SubmitOutcome outcome = _isEdit
+          ? await ctrl.update(widget.goal!.id, body)
+          : await ctrl.create(body);
+      if (mounted) {
+        // Said out loud rather than implied: the editor closing normally would
+        // otherwise read as "saved on the server", which it is not yet.
+        if (outcome == SubmitOutcome.deferred) showOfflineSaved(context);
+        Navigator.of(context).pop();
       }
-      if (mounted) Navigator.of(context).pop();
     } catch (e) {
       if (mounted) showError(context, e);
     } finally {

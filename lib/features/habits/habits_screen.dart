@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../core/offline/queue_flusher.dart';
+import '../../core/offline/task_overlay.dart' show PendingState;
 import '../../models/habit.dart';
+import '../../providers/filter_provider.dart';
 import '../../providers/habits_provider.dart';
+import '../../providers/write_queue_provider.dart';
 import '../../widgets/common.dart';
 
 class HabitsScreen extends ConsumerWidget {
@@ -12,6 +16,10 @@ class HabitsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(habitsControllerProvider);
+    // Content comes from the overlay so a habit made offline is real
+    // immediately; the AsyncValue is still consulted for loading and error.
+    final overlaid = ref.watch(allHabitsProvider);
+    final pendingStates = ref.watch(habitPendingStateProvider);
     return Scaffold(
       appBar: AppBar(title: const Text('Habits')),
       floatingActionButton: FloatingActionButton(
@@ -24,32 +32,42 @@ class HabitsScreen extends ConsumerWidget {
         loading: () => const LoadingCenter(),
         error: (e, _) =>
             ErrorRetry(message: '$e', onRetry: () => ref.read(habitsControllerProvider.notifier).load()),
-        data: (habits) => RefreshIndicator(
-          onRefresh: () => ref.read(habitsControllerProvider.notifier).refresh(),
-          child: habits.isEmpty
-              ? ListView(children: const [
-                  SizedBox(height: 120),
-                  EmptyState(
-                    icon: Icons.local_fire_department_outlined,
-                    title: 'No habits yet',
-                    subtitle: 'Build a routine — tap + to add your first habit.',
+        data: (_) {
+          // The overlay, not the raw response: a habit created offline must be
+          // real on this screen immediately, and one whose edit is pending must
+          // show the edit.
+          final habits = overlaid;
+          return RefreshIndicator(
+            onRefresh: () => ref.read(habitsControllerProvider.notifier).refresh(),
+            child: habits.isEmpty
+                ? ListView(children: const [
+                    SizedBox(height: 120),
+                    EmptyState(
+                      icon: Icons.local_fire_department_outlined,
+                      title: 'No habits yet',
+                      subtitle: 'Build a routine — tap + to add your first habit.',
+                    ),
+                  ])
+                : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
+                    itemCount: habits.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (ctx, i) => _HabitCard(
+                      habit: habits[i],
+                      pending: pendingStates[habits[i].id],
+                    ),
                   ),
-                ])
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-                  itemCount: habits.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 8),
-                  itemBuilder: (ctx, i) => _HabitCard(habit: habits[i]),
-                ),
-        ),
+          );
+        },
       ),
     );
   }
 }
 
 class _HabitCard extends ConsumerWidget {
-  const _HabitCard({required this.habit});
+  const _HabitCard({required this.habit, this.pending});
   final Habit habit;
+  final PendingState? pending;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -58,9 +76,19 @@ class _HabitCard extends ConsumerWidget {
     final s = habit.stats;
     final ctrl = ref.read(habitsControllerProvider.notifier);
 
-    Future<void> run(Future<void> Function() f) async {
+    // No longer disabled for an unsynced habit. A check-in is now a queued op
+    // that DEPENDS on the create, so the queue holds it until the real id
+    // exists and then substitutes it — checking in a habit you just made
+    // offline is the ordinary case, not an error.
+    Future<void> run(Future<SubmitOutcome> Function() f) async {
       try {
-        await f();
+        // Silent when it lands, a word when it does not. A toast on every tap of
+        // a +1 button would be worse than no feedback — the number moving IS the
+        // feedback, and the cloud badge says the rest.
+        final SubmitOutcome outcome = await f();
+        if (outcome == SubmitOutcome.deferred && context.mounted) {
+          showOfflineSaved(context);
+        }
       } catch (e) {
         if (context.mounted) showError(context, e);
       }
@@ -81,7 +109,34 @@ class _HabitCard extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(habit.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                Row(
+                  children: [
+                    // Before the name, so a habit that has not reached the
+                    // server is never mistaken for one that has. Failed is amber
+                    // and the row STAYS — a habit the user typed must not vanish
+                    // because the server refused it.
+                    if (pending != null)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: Icon(
+                          switch (pending!) {
+                            PendingState.queued => Icons.cloud_queue,
+                            PendingState.sending => Icons.cloud_sync,
+                            PendingState.failed => Icons.error_outline,
+                          },
+                          size: 14,
+                          color: pending == PendingState.failed
+                              ? scheme.error
+                              : scheme.outline,
+                        ),
+                      ),
+                    Expanded(
+                      child: Text(habit.name,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 15)),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 4),
                 Row(
                   children: [
@@ -221,12 +276,15 @@ class _HabitEditorScreenState extends ConsumerState<HabitEditorScreen> {
     setState(() => _saving = true);
     try {
       final ctrl = ref.read(habitsControllerProvider.notifier);
-      if (_isEdit) {
-        await ctrl.update(widget.habit!.id, body);
-      } else {
-        await ctrl.create(body);
+      final SubmitOutcome outcome = _isEdit
+          ? await ctrl.update(widget.habit!.id, body)
+          : await ctrl.create(body);
+      if (mounted) {
+        // Said out loud rather than implied: the editor closing normally would
+        // otherwise read as "saved on the server", which it is not yet.
+        if (outcome == SubmitOutcome.deferred) showOfflineSaved(context);
+        Navigator.of(context).pop();
       }
-      if (mounted) Navigator.of(context).pop();
     } catch (e) {
       if (mounted) showError(context, e);
     } finally {
@@ -238,8 +296,12 @@ class _HabitEditorScreenState extends ConsumerState<HabitEditorScreen> {
     final ok = await confirmDialog(context, title: 'Delete habit?', message: 'All check-ins are removed.');
     if (!ok) return;
     try {
-      await ref.read(habitsControllerProvider.notifier).delete(widget.habit!.id);
-      if (mounted) Navigator.of(context).pop();
+      final SubmitOutcome outcome =
+          await ref.read(habitsControllerProvider.notifier).delete(widget.habit!.id);
+      if (mounted) {
+        if (outcome == SubmitOutcome.deferred) showOfflineSaved(context);
+        Navigator.of(context).pop();
+      }
     } catch (e) {
       if (mounted) showError(context, e);
     }
@@ -247,8 +309,12 @@ class _HabitEditorScreenState extends ConsumerState<HabitEditorScreen> {
 
   Future<void> _archive() async {
     try {
-      await ref.read(habitsControllerProvider.notifier).archive(widget.habit!.id);
-      if (mounted) Navigator.of(context).pop();
+      final SubmitOutcome outcome =
+          await ref.read(habitsControllerProvider.notifier).archive(widget.habit!.id);
+      if (mounted) {
+        if (outcome == SubmitOutcome.deferred) showOfflineSaved(context);
+        Navigator.of(context).pop();
+      }
     } catch (e) {
       if (mounted) showError(context, e);
     }

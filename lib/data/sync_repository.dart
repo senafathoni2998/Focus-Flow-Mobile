@@ -15,6 +15,8 @@ class SyncDelta {
     required this.tasks,
     required this.lists,
     required this.tags,
+    required this.habits,
+    required this.goals,
     required this.deleted,
   });
 
@@ -29,6 +31,17 @@ class SyncDelta {
   final List<Map<String, dynamic>> tasks;
   final List<Map<String, dynamic>> lists;
   final List<Map<String, dynamic>> tags;
+
+  /// Carries the server-computed `stats`, same as `GET /habits`.
+  ///
+  /// One caveat the server documents and this cannot work around: a CHECK-IN
+  /// does not bump the habit's own `updatedAt`, so a habit whose streak changed
+  /// on another device will not appear in a delta at all. What is returned is
+  /// correct; what changed is not guaranteed to be returned. Pull-to-refresh on
+  /// the Habits tab is still the way to see another device's check-ins.
+  final List<Map<String, dynamic>> habits;
+
+  final List<Map<String, dynamic>> goals;
 
   /// `(entityType, entityId)` pairs from the server's tombstones — the only way
   /// a delta can tell a client that something is gone, since a deleted row
@@ -49,6 +62,8 @@ class SyncDelta {
       tasks: asMapList(changed['tasks']),
       lists: asMapList(changed['lists']),
       tags: asMapList(changed['tags']),
+      habits: asMapList(changed['habits']),
+      goals: asMapList(changed['goals']),
       deleted: deleted,
     );
   }
